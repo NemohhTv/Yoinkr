@@ -1,0 +1,16 @@
+export const ipcChannels = {
+  appGetBootstrapState: 'app.getBootstrapState',
+  appRevealPath: 'app.revealPath',
+  settingsGet: 'settings.get',
+  settingsUpdate: 'settings.update',
+  settingsPickDirectory: 'settings.pickDirectory',
+  settingsReset: 'settings.reset',
+  downloaderValidateUrls: 'downloader.validateUrls',
+  downloaderGetMetadata: 'downloader.getMetadata',
+  downloaderEnqueueDraft: 'downloader.enqueueDraft',
+  toolsGetBinaryStatus: 'tools.getBinaryStatus',
+  toolsSelectBinaryPath: 'tools.selectBinaryPath',
+  toolsDownloadTool: 'tools.downloadTool',
+  toolsDownloadProgress: 'tools.downloadProgress',
+  diagnosticsGetAppInfo: 'diagnostics.getAppInfo',
+} as const;

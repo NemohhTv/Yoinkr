@@ -1,0 +1,76 @@
+{
+  "name": "yoinkr",
+  "productName": "Yoinkr",
+  "version": "0.1.0",
+  "description": "Windows-first desktop media workflow app for download-to-edit pipelines.",
+  "main": "out/main/index.js",
+  "author": "Cursor",
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "tsc --noEmit && electron-vite build",
+    "preview": "electron-vite preview",
+    "postinstall": "electron-builder install-app-deps",
+    "dist": "npm run build && electron-builder --win nsis",
+    "dist:dir": "npm run build && electron-builder --win dir",
+    "dist:portable": "npm run build && electron-builder --win portable",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings=0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^12.4.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.9.4",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.38.0",
+    "@types/adm-zip": "^0.5.8",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.6.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "electron": "^37.2.4",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^4.0.0",
+    "eslint": "^9.38.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.4.0",
+    "png-to-ico": "^3.0.1",
+    "sharp": "^0.34.5",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "vite": "^7.1.7"
+  },
+  "build": {
+    "appId": "com.yoinkr.app",
+    "productName": "Yoinkr",
+    "icon": "build/icon.ico",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
