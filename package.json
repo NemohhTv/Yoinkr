@@ -12,9 +12,10 @@
     "build": "tsc --noEmit && electron-vite build",
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
-    "dist": "npm run build && electron-builder --win nsis",
-    "dist:dir": "npm run build && electron-builder --win dir",
-    "dist:portable": "npm run build && electron-builder --win portable",
+    "build:icon": "node scripts/build-icon.mjs",
+    "dist": "npm run build:icon && npm run build && electron-builder --win nsis",
+    "dist:dir": "npm run build:icon && npm run build && electron-builder --win dir",
+    "dist:portable": "npm run build:icon && npm run build && electron-builder --win portable",
     "lint": "eslint . --ext .ts,.tsx --max-warnings=0"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.4.0",
     "png-to-ico": "^3.0.1",
+    "rcedit": "^4.0.1",
     "sharp": "^0.34.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0",
@@ -60,7 +62,9 @@
       "package.json"
     ],
     "asar": true,
+    "afterPack": "scripts/after-pack.cjs",
     "win": {
+      "icon": "build/icon.ico",
       "signAndEditExecutable": false,
       "target": [
         "nsis",

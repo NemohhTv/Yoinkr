@@ -1,76 +1,134 @@
+import { useCallback, useRef, useState } from 'react';
 import type { useEditorController } from '../use-editor-controller';
 
 type EditorController = ReturnType<typeof useEditorController>;
 
+const BADGE_COLORS = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899',
+];
+
 export const EditorSegmentList = ({ controller }: { controller: EditorController }): JSX.Element => {
   const {
+    formatTimecode,
     segments,
     selectedSegmentId,
-    exportPreview,
+    segmentsTotalDuration,
     loadSegment,
-    moveSegment,
-    toggleSegmentSelected,
-    duplicateSegment,
     removeSegment,
+    reorderSegmentByDrag,
+    playSegmentsInOrder,
   } = controller;
 
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOffsetY, setDragOffsetY] = useState(0);
+  const isDragging = useRef(false);
+  const startY = useRef(0);
+  const dragIdx = useRef(-1);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const onPointerDown = useCallback((event: React.PointerEvent, segmentId: string, index: number) => {
+    if ((event.target as HTMLElement).closest('.editor-segment-remove')) { return; }
+    startY.current = event.clientY;
+    dragIdx.current = index;
+    isDragging.current = false;
+    setDragId(segmentId);
+    setDragOffsetY(0);
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }, []);
+
+  const onPointerMove = useCallback((event: React.PointerEvent) => {
+    if (!dragId) { return; }
+    const deltaY = event.clientY - startY.current;
+    if (!isDragging.current && Math.abs(deltaY) < 5) { return; }
+    isDragging.current = true;
+    setDragOffsetY(deltaY);
+  }, [dragId]);
+
+  const onPointerUp = useCallback(() => {
+    if (dragId && isDragging.current) {
+      const list = listRef.current;
+      if (list) {
+        const cards = list.querySelectorAll('.editor-segment-item');
+        const cardHeight = cards[0]?.getBoundingClientRect().height ?? 56;
+        const gap = 4;
+        const deltaRows = Math.round(dragOffsetY / (cardHeight + gap));
+        const newIndex = Math.max(0, Math.min(segments.length - 1, dragIdx.current + deltaRows));
+        if (newIndex !== dragIdx.current) {
+          reorderSegmentByDrag(dragId, newIndex);
+        }
+      }
+    }
+    isDragging.current = false;
+    setDragId(null);
+    setDragOffsetY(0);
+  }, [dragId, dragOffsetY, reorderSegmentByDrag, segments.length]);
+
+  const onCardClick = useCallback((segmentId: string) => {
+    if (isDragging.current) { return; }
+    loadSegment(segmentId);
+  }, [loadSegment]);
+
   return (
-    <section className="panel editor-segment-panel">
-      <div className="editor-panel-heading">
-        <div>
-          <p className="eyebrow">Segments</p>
-          <h2>Cut list</h2>
-        </div>
-        <span className="muted">{segments.length} saved</span>
+    <div className="editor-segments-panel">
+      <div className="editor-segments-header">
+        <span className="editor-segments-title">Segments to export</span>
+        <span className="muted">{segments.length}</span>
       </div>
 
-      {segments.length === 0 ? (
-        <div className="workspace-preview">
-          <div className="workspace-strip">No saved segments yet. The current selection can still be previewed and exported as a single cut.</div>
-        </div>
-      ) : (
-        <div className="editor-segment-list">
-          {segments.map((segment, index) => {
-            const previewSegment = exportPreview?.segments.find((item) => item.segmentId === segment.id) ?? null;
+      <div className="editor-segments-scroll" ref={listRef}>
+        {segments.length === 0 ? (
+          <div className="editor-segments-empty">Use "Set start" and "Set end" then "Add segment" to begin.</div>
+        ) : (
+          segments.map((segment, index) => {
+            const duration = segment.requestedEndSeconds - segment.requestedStartSeconds;
+            const isActive = selectedSegmentId === segment.id;
+            const isBeingDragged = dragId === segment.id && isDragging.current;
+            const badgeColor = BADGE_COLORS[index % BADGE_COLORS.length];
 
             return (
-              <div key={segment.id} className={`editor-segment-card ${selectedSegmentId === segment.id ? 'active' : ''}`}>
-                <div className="editor-segment-head">
-                  <div className="stack gap-xs">
-                    <strong>{segment.label}</strong>
-                    <p className="muted">
-                      Requested {segment.requestedStartSeconds.toFixed(3)}s to {segment.requestedEndSeconds.toFixed(3)}s
-                    </p>
-                    {previewSegment && (
-                      <p className="muted">
-                        Actual {previewSegment.boundary.actualStartSeconds.toFixed(3)}s to {previewSegment.boundary.actualEndSeconds.toFixed(3)}s
-                      </p>
-                    )}
-                  </div>
-                  <span className="editor-segment-length">
-                    {(segment.requestedEndSeconds - segment.requestedStartSeconds).toFixed(3)}s
+              <div
+                key={segment.id}
+                className={`editor-segment-item${isActive ? ' active' : ''}${isBeingDragged ? ' dragging' : ''}`}
+                style={isBeingDragged ? { transform: `translateY(${dragOffsetY}px)`, zIndex: 10 } : undefined}
+                onPointerDown={(event) => onPointerDown(event, segment.id, index)}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onClick={() => onCardClick(segment.id)}
+              >
+                <span className="editor-segment-badge" style={{ backgroundColor: badgeColor }}>
+                  {index + 1}
+                </span>
+                <div className="editor-segment-info">
+                  <span className="editor-segment-range">
+                    {formatTimecode(segment.requestedStartSeconds)} – {formatTimecode(segment.requestedEndSeconds)}
                   </span>
+                  <span className="editor-segment-duration">{duration.toFixed(1)}s</span>
                 </div>
-
-                {previewSegment?.warnings.length ? (
-                  <div className="editor-segment-warning muted">{previewSegment.warnings.join(' ')}</div>
-                ) : null}
-
-                <div className="button-cluster">
-                  <button className="button secondary" onClick={() => loadSegment(segment.id)}>Load</button>
-                  <button className="button secondary" onClick={() => toggleSegmentSelected(segment.id)}>
-                    {segment.selected ? 'Deselect' : 'Select'}
-                  </button>
-                  <button className="button secondary" onClick={() => moveSegment(segment.id, -1)} disabled={index === 0}>Up</button>
-                  <button className="button secondary" onClick={() => moveSegment(segment.id, 1)} disabled={index === segments.length - 1}>Down</button>
-                  <button className="button secondary" onClick={() => duplicateSegment(segment.id)}>Duplicate</button>
-                  <button className="button secondary" onClick={() => removeSegment(segment.id)}>Remove</button>
-                </div>
+                <button
+                  className="editor-segment-remove"
+                  title="Remove segment"
+                  onClick={(event) => { event.stopPropagation(); removeSegment(segment.id); }}
+                >
+                  ✕
+                </button>
               </div>
             );
-          })}
-        </div>
-      )}
-    </section>
+          })
+        )}
+      </div>
+
+      <div className="editor-segments-footer">
+        <button
+          className="button secondary"
+          disabled={segments.length === 0}
+          onClick={() => void playSegmentsInOrder()}
+        >
+          Play segments in order
+        </button>
+        {segments.length > 0 && (
+          <span className="muted">Total: {formatTimecode(segmentsTotalDuration)}</span>
+        )}
+      </div>
+    </div>
   );
 };

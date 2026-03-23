@@ -1,6 +1,9 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 
 import { useAppState } from '@renderer/app/providers/app-state-context';
+import { DownloaderPage } from '@renderer/features/downloader/downloader-page';
+import { EditorPage } from '@renderer/features/editor/editor-page';
+import { SettingsPage } from '@renderer/features/settings/settings-page';
 
 import headerLogo from '@renderer/assets/yoinkr-header.png';
 
@@ -12,6 +15,7 @@ const navItems = [
 
 export const ShellLayout = (): JSX.Element => {
   const { isLoading, error, bootstrapState, settings } = useAppState();
+  const location = useLocation();
 
   if (isLoading) {
     return <div className="app-loading">Starting Yoinkr...</div>;
@@ -20,6 +24,8 @@ export const ShellLayout = (): JSX.Element => {
   if (error || !bootstrapState || !settings) {
     return <div className="app-loading">Unable to start the app: {error ?? 'Unknown bootstrap error.'}</div>;
   }
+
+  const currentPath = location.pathname;
 
   return (
     <div className="app-shell">
@@ -44,7 +50,15 @@ export const ShellLayout = (): JSX.Element => {
 
       <div className="main-frame">
         <main className="main-content">
-          <Outlet />
+          <div style={{ display: currentPath === '/downloader' ? 'contents' : 'none' }}>
+            <DownloaderPage />
+          </div>
+          <div style={{ display: currentPath === '/editor' ? 'contents' : 'none' }}>
+            <EditorPage />
+          </div>
+          <div style={{ display: currentPath === '/settings' ? 'contents' : 'none' }}>
+            <SettingsPage />
+          </div>
         </main>
       </div>
     </div>

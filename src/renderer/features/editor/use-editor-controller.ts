@@ -9,7 +9,6 @@ import type {
   EditorOpenRequest,
   EditorOpenResult,
   EditorSegment,
-  EditorTimelineAssets,
 } from '@shared/types/editor';
 
 import { yoinkrClient } from '@renderer/lib/api/yoinkr-client';
@@ -25,58 +24,7 @@ const formatTimecode = (seconds: number): string => {
     .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
 };
 
-const parseTimecodeInput = (value: string): number | null => {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    const parsed = Number.parseFloat(trimmed);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  const parts = trimmed.split(':');
-  if (parts.length < 2 || parts.length > 3) {
-    return null;
-  }
-
-  const [hoursPart, minutesPart, secondsPart] =
-    parts.length === 3 ? parts : ['0', parts[0] ?? '0', parts[1] ?? '0'];
-  const hours = Number.parseInt(hoursPart, 10);
-  const minutes = Number.parseInt(minutesPart, 10);
-  const seconds = Number.parseFloat(secondsPart);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes) || !Number.isFinite(seconds)) {
-    return null;
-  }
-  return hours * 3600 + minutes * 60 + seconds;
-};
-
 const clamp = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
-
-const findPreviousKeyframe = (keyframeTimes: number[], targetSeconds: number): number | null => {
-  if (keyframeTimes.length === 0) {
-    return null;
-  }
-
-  let candidate = keyframeTimes[0] ?? null;
-  for (const keyframeTime of keyframeTimes) {
-    if (keyframeTime > targetSeconds) {
-      break;
-    }
-    candidate = keyframeTime;
-  }
-  return candidate;
-};
-
-const findNextKeyframe = (keyframeTimes: number[], targetSeconds: number): number | null => {
-  for (const keyframeTime of keyframeTimes) {
-    if (keyframeTime >= targetSeconds) {
-      return keyframeTime;
-    }
-  }
-  return keyframeTimes[keyframeTimes.length - 1] ?? null;
-};
 
 const createSegmentId = (): string =>
   typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -96,7 +44,6 @@ const buildMergedFileName = (sourcePath: string): string => {
   if (extensionIndex === -1) {
     return `${fileName}_merged`;
   }
-
   return `${fileName.slice(0, extensionIndex)}_merged${fileName.slice(extensionIndex)}`;
 };
 
@@ -107,7 +54,6 @@ const buildSingleCutFileName = (sourcePath: string): string => {
   if (extensionIndex === -1) {
     return `${fileName}_cut`;
   }
-
   return `${fileName.slice(0, extensionIndex)}_cut${fileName.slice(extensionIndex)}`;
 };
 
@@ -116,99 +62,87 @@ const isEditableElement = (target: EventTarget | null): boolean => {
   if (!element) {
     return false;
   }
-
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName) || element.isContentEditable;
 };
+
+const findPreviousKeyframe = (keyframeTimes: number[], targetSeconds: number): number | null => {
+  if (keyframeTimes.length === 0) { return null; }
+  let candidate = keyframeTimes[0] ?? null;
+  for (const kf of keyframeTimes) {
+    if (kf > targetSeconds + 0.001) { break; }
+    candidate = kf;
+  }
+  return candidate;
+};
+
+const findNextKeyframe = (keyframeTimes: number[], targetSeconds: number): number | null => {
+  for (const kf of keyframeTimes) {
+    if (kf >= targetSeconds - 0.001) { return kf; }
+  }
+  return keyframeTimes[keyframeTimes.length - 1] ?? null;
+};
+
+export { formatTimecode };
 
 export const useEditorController = () => {
   const location = useLocation();
   const previewRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   const lastHandledRouteKeyRef = useRef<string | null>(null);
+  const playSegmentsQueueRef = useRef<EditorSegment[] | null>(null);
+  const playSegmentsIndexRef = useRef(0);
+
   const [isDragActive, setIsDragActive] = useState(false);
   const [openResult, setOpenResult] = useState<EditorOpenResult | null>(null);
-  const [timelineAssets, setTimelineAssets] = useState<EditorTimelineAssets | null>(null);
   const [segments, setSegments] = useState<EditorSegment[]>([]);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [segmentLabel, setSegmentLabel] = useState('');
-  const [cutMode, setCutMode] = useState<EditorCutMode>('auto');
-  const [exportMode, setExportMode] = useState<EditorExportMode>('single-cut');
+  const [cutMode, setCutMode] = useState<EditorCutMode>('stream-copy');
+  const [exportMode, setExportMode] = useState<EditorExportMode>('separate-files');
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [outputFilePath, setOutputFilePath] = useState<string | null>(null);
+  const [exportFileName, setExportFileName] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
   const [previewDuration, setPreviewDuration] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [timelineZoom, setTimelineZoom] = useState(1);
   const [isLoadingSource, setIsLoadingSource] = useState(false);
-  const [isLoadingTimelineAssets, setIsLoadingTimelineAssets] = useState(false);
-  const [isPlanningExport, setIsPlanningExport] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [activityMessage, setActivityMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [selection, setSelection] = useState({ inPointSeconds: 0, outPointSeconds: 0 });
-  const [selectionInputs, setSelectionInputs] = useState({ inPoint: '00:00:00.000', outPoint: '00:00:00.000' });
   const [exportPreview, setExportPreview] = useState<EditorExportPreview | null>(null);
   const [exportJob, setExportJob] = useState<{
     status: 'idle' | 'exporting' | 'complete' | 'error';
     message: string | null;
     outputPaths: string[];
-  }>({
-    status: 'idle',
-    message: null,
-    outputPaths: [],
-  });
+  }>({ status: 'idle', message: null, outputPaths: [] });
 
   const sourceDuration = openResult?.mediaInfo.durationSeconds ?? previewDuration ?? 0;
   const previewUrl = openResult ? toFileUrl(openResult.source.sourcePath) : null;
   const isAudioOnly = Boolean(openResult?.source.hasAudio && !openResult?.source.hasVideo);
   const keyframeTimes = useMemo(() => openResult?.mediaInfo.keyframeTimes ?? [], [openResult?.mediaInfo.keyframeTimes]);
-  const keyframeMarkers = useMemo(
-    () =>
-      keyframeTimes.map((timeSeconds, index) => ({
-        id: `keyframe-${index + 1}`,
-        timeSeconds,
-        percent: sourceDuration > 0 ? (timeSeconds / sourceDuration) * 100 : 0,
-      })),
-    [keyframeTimes, sourceDuration],
-  );
-  const timelineThumbnails = useMemo(
-    () =>
-      (timelineAssets?.thumbnails ?? []).map((thumbnail) => ({
-        ...thumbnail,
-        fileUrl: toFileUrl(thumbnail.imagePath),
-      })),
-    [timelineAssets],
-  );
-  const waveformUrl = timelineAssets?.waveformImagePath ? toFileUrl(timelineAssets.waveformImagePath) : null;
-
-  const syncSelectionInputs = useCallback((inPointSeconds: number, outPointSeconds: number) => {
-    setSelectionInputs({
-      inPoint: formatTimecode(inPointSeconds),
-      outPoint: formatTimecode(outPointSeconds),
-    });
-  }, []);
 
   const resetEditorState = useCallback((result: EditorOpenResult) => {
     const duration = result.mediaInfo.durationSeconds ?? 0;
     setOpenResult(result);
-    setTimelineAssets(null);
     setSegments([]);
     setSelectedSegmentId(null);
     setSegmentLabel('');
-    setCutMode('auto');
-    setExportMode('single-cut');
+    setCutMode('stream-copy');
+    setExportMode('separate-files');
     setOutputDirectory(null);
     setOutputFilePath(null);
+    setExportFileName(buildSingleCutFileName(result.source.fileName));
     setCurrentTime(0);
     setIsPlaying(false);
-    setTimelineZoom(1);
     setPreviewDuration(result.mediaInfo.durationSeconds);
     setPreviewError(null);
     setExportPreview(null);
     setExportJob({ status: 'idle', message: null, outputPaths: [] });
     setSelection({ inPointSeconds: 0, outPointSeconds: duration });
-    syncSelectionInputs(0, duration);
-  }, [syncSelectionInputs]);
+    playSegmentsQueueRef.current = null;
+    playSegmentsIndexRef.current = 0;
+  }, []);
 
   const openSource = useCallback(async (request: EditorOpenRequest) => {
     setIsLoadingSource(true);
@@ -218,7 +152,7 @@ export const useEditorController = () => {
     try {
       const result = await yoinkrClient.editor.openSource(request);
       resetEditorState(result);
-      setActivityMessage(`Loaded ${result.source.displayName} into the editor.`);
+      setActivityMessage(`Loaded ${result.source.displayName}`);
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : 'Unable to open the selected file.');
     } finally {
@@ -231,58 +165,57 @@ export const useEditorController = () => {
     if (!routeState?.sourcePath || lastHandledRouteKeyRef.current === location.key) {
       return;
     }
-
     lastHandledRouteKeyRef.current = location.key;
     void openSource(routeState);
   }, [location.key, location.state, openSource]);
 
   useEffect(() => {
-    if (!openResult) {
-      setTimelineAssets(null);
+    if (!openResult || outputDirectory) {
       return;
     }
-
-    let cancelled = false;
-
-    const loadTimelineAssets = async (): Promise<void> => {
+    const loadDefault = async (): Promise<void> => {
       try {
-        setIsLoadingTimelineAssets(true);
-        const assets = await yoinkrClient.editor.getTimelineAssets(openResult.source.sourcePath);
-        if (!cancelled) {
-          setTimelineAssets(assets);
+        const settings = await yoinkrClient.settings.get();
+        if (settings.exportDirectory) {
+          setOutputDirectory(settings.exportDirectory);
         }
       } catch {
-        if (!cancelled) {
-          setTimelineAssets({ thumbnails: [], waveformImagePath: null, warnings: ['Timeline assets could not be generated for this source.'] });
-        }
-      } finally {
-        if (!cancelled) {
-          setIsLoadingTimelineAssets(false);
-        }
+        // settings unavailable
       }
     };
+    void loadDefault();
+  }, [openResult, outputDirectory]);
 
-    void loadTimelineAssets();
+  useEffect(() => {
+    setOutputFilePath(null);
+  }, [exportFileName, exportMode]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [openResult]);
+  const closeEdit = useCallback(() => {
+    setOpenResult(null);
+    setSegments([]);
+    setSelectedSegmentId(null);
+    setSegmentLabel('');
+    setExportFileName('');
+    setOutputDirectory(null);
+    setOutputFilePath(null);
+    setCurrentTime(0);
+    setIsPlaying(false);
+    setPreviewDuration(null);
+    setPreviewError(null);
+    setExportPreview(null);
+    setExportJob({ status: 'idle', message: null, outputPaths: [] });
+    setSelection({ inPointSeconds: 0, outPointSeconds: 0 });
+    setError(null);
+    setActivityMessage(null);
+    playSegmentsQueueRef.current = null;
+    playSegmentsIndexRef.current = 0;
+  }, []);
 
   const pickSourceFile = useCallback(async (): Promise<void> => {
     try {
       const sourcePath = await yoinkrClient.editor.pickSourceFile();
-      if (!sourcePath) {
-        return;
-      }
-
-      await openSource({
-        sourcePath,
-        sourceKind: 'local',
-        titleHint: null,
-        sourceUrl: null,
-        autoLoad: true,
-      });
+      if (!sourcePath) { return; }
+      await openSource({ sourcePath, sourceKind: 'local', titleHint: null, sourceUrl: null, autoLoad: true });
     } catch (pickError) {
       setError(pickError instanceof Error ? pickError.message : 'Unable to choose a source file.');
     }
@@ -301,29 +234,18 @@ export const useEditorController = () => {
   const onDrop = useCallback(async (event: DragEvent<HTMLElement>) => {
     event.preventDefault();
     setIsDragActive(false);
-
     const file = Array.from(event.dataTransfer.files)[0] as (File & { path?: string }) | undefined;
     const droppedPath = file ? yoinkrClient.app.resolveFilePath(file)?.trim() || file.path?.trim() : '';
     if (!droppedPath) {
       setError('Could not read the dropped file path. Use the file picker instead.');
       return;
     }
-
-    await openSource({
-      sourcePath: droppedPath,
-      sourceKind: 'local',
-      titleHint: file.name,
-      sourceUrl: null,
-      autoLoad: true,
-    });
+    await openSource({ sourcePath: droppedPath, sourceKind: 'local', titleHint: file.name, sourceUrl: null, autoLoad: true });
   }, [openSource]);
 
   const seekTo = useCallback((nextSeconds: number) => {
     const element = previewRef.current;
-    if (!element) {
-      return;
-    }
-
+    if (!element) { return; }
     const bounded = clamp(nextSeconds, 0, sourceDuration || nextSeconds);
     element.currentTime = bounded;
     setCurrentTime(bounded);
@@ -331,16 +253,12 @@ export const useEditorController = () => {
 
   const togglePlayback = useCallback(async () => {
     const element = previewRef.current;
-    if (!element) {
-      return;
-    }
-
+    if (!element) { return; }
     if (element.paused) {
       await element.play().catch(() => {});
       setIsPlaying(!element.paused);
       return;
     }
-
     element.pause();
     setIsPlaying(false);
   }, []);
@@ -349,134 +267,67 @@ export const useEditorController = () => {
     seekTo(currentTime + deltaSeconds);
   }, [currentTime, seekTo]);
 
-  const stepToPreviousKeyframe = useCallback(() => {
-    const previousKeyframe = findPreviousKeyframe(keyframeTimes, Math.max(0, currentTime - 0.001));
-    if (previousKeyframe !== null) {
-      seekTo(previousKeyframe);
-    }
-  }, [currentTime, keyframeTimes, seekTo]);
-
-  const stepToNextKeyframe = useCallback(() => {
-    const nextKeyframe = findNextKeyframe(keyframeTimes, currentTime + 0.001);
-    if (nextKeyframe !== null) {
-      seekTo(nextKeyframe);
-    }
-  }, [currentTime, keyframeTimes, seekTo]);
-
   const setSelectionRange = useCallback((inPointSeconds: number, outPointSeconds: number) => {
     const boundedIn = clamp(inPointSeconds, 0, sourceDuration || inPointSeconds);
     const boundedOut = clamp(outPointSeconds, boundedIn, sourceDuration || outPointSeconds);
     setSelection({ inPointSeconds: boundedIn, outPointSeconds: boundedOut });
-    syncSelectionInputs(boundedIn, boundedOut);
-  }, [sourceDuration, syncSelectionInputs]);
+  }, [sourceDuration]);
 
   const setInToCurrent = useCallback(() => {
-    setSelectionRange(currentTime, Math.max(currentTime, selection.outPointSeconds));
-  }, [currentTime, selection.outPointSeconds, setSelectionRange]);
+    const newOut = currentTime >= selection.outPointSeconds ? sourceDuration : selection.outPointSeconds;
+    setSelectionRange(currentTime, newOut);
+  }, [currentTime, selection.outPointSeconds, sourceDuration, setSelectionRange]);
 
   const setOutToCurrent = useCallback(() => {
-    setSelectionRange(Math.min(selection.inPointSeconds, currentTime), currentTime);
+    const newIn = currentTime <= selection.inPointSeconds ? 0 : selection.inPointSeconds;
+    setSelectionRange(newIn, currentTime);
   }, [currentTime, selection.inPointSeconds, setSelectionRange]);
-
-  const snapInToKeyframe = useCallback(() => {
-    const snapped = findPreviousKeyframe(keyframeTimes, selection.inPointSeconds);
-    if (snapped !== null) {
-      setSelectionRange(snapped, selection.outPointSeconds);
-      setActivityMessage(`Snapped in point to keyframe at ${formatTimecode(snapped)}.`);
-    }
-  }, [keyframeTimes, selection.inPointSeconds, selection.outPointSeconds, setSelectionRange]);
-
-  const snapOutToKeyframe = useCallback(() => {
-    const snapped = findNextKeyframe(keyframeTimes, selection.outPointSeconds);
-    if (snapped !== null) {
-      setSelectionRange(selection.inPointSeconds, snapped);
-      setActivityMessage(`Snapped out point to keyframe at ${formatTimecode(snapped)}.`);
-    }
-  }, [keyframeTimes, selection.inPointSeconds, selection.outPointSeconds, setSelectionRange]);
-
-  const jumpToInPoint = useCallback(() => {
-    seekTo(selection.inPointSeconds);
-  }, [seekTo, selection.inPointSeconds]);
-
-  const jumpToOutPoint = useCallback(() => {
-    seekTo(selection.outPointSeconds);
-  }, [seekTo, selection.outPointSeconds]);
-
-  const updateSelectionInput = useCallback((field: 'inPoint' | 'outPoint', value: string) => {
-    setSelectionInputs((current) => ({ ...current, [field]: value }));
-  }, []);
-
-  const commitSelectionInput = useCallback((field: 'inPoint' | 'outPoint') => {
-    const parsed = parseTimecodeInput(selectionInputs[field]);
-    if (parsed === null) {
-      syncSelectionInputs(selection.inPointSeconds, selection.outPointSeconds);
-      return;
-    }
-
-    if (field === 'inPoint') {
-      setSelectionRange(parsed, selection.outPointSeconds);
-      return;
-    }
-
-    setSelectionRange(selection.inPointSeconds, parsed);
-  }, [selection.inPointSeconds, selection.outPointSeconds, selectionInputs, setSelectionRange, syncSelectionInputs]);
 
   const addSegment = useCallback(() => {
     const { inPointSeconds, outPointSeconds } = selection;
     if (outPointSeconds <= inPointSeconds) {
-      setError('Out point must be after the in point before you create a segment.');
+      setError('Set start and end points before adding a segment.');
       return;
+    }
+
+    let snapStart = inPointSeconds;
+    let snapEnd = outPointSeconds;
+    if (keyframeTimes.length > 0) {
+      const prevKf = findPreviousKeyframe(keyframeTimes, inPointSeconds);
+      const nextKf = findNextKeyframe(keyframeTimes, outPointSeconds);
+      if (prevKf !== null) { snapStart = prevKf; }
+      if (nextKf !== null) { snapEnd = nextKf; }
+      if (snapEnd <= snapStart) { snapEnd = outPointSeconds; }
     }
 
     const nextSegment: EditorSegment = {
       id: createSegmentId(),
       label: segmentLabel.trim() || `Clip ${segments.length + 1}`,
-      requestedStartSeconds: inPointSeconds,
-      requestedEndSeconds: outPointSeconds,
+      requestedStartSeconds: snapStart,
+      requestedEndSeconds: snapEnd,
       selected: true,
       exportStatus: 'planned',
     };
-
     setSegments((current) => [...current, nextSegment]);
     setSelectedSegmentId(nextSegment.id);
-    setSegmentLabel(nextSegment.label);
+    setSegmentLabel('');
     setError(null);
-    setActivityMessage(`Added segment ${nextSegment.label}.`);
-  }, [segmentLabel, segments.length, selection]);
+
+    const snapped = snapStart !== inPointSeconds || snapEnd !== outPointSeconds;
+    const msg = snapped
+      ? `Added ${nextSegment.label} (snapped to keyframes)`
+      : `Added ${nextSegment.label}`;
+    setActivityMessage(msg);
+  }, [keyframeTimes, segmentLabel, segments.length, selection]);
 
   const loadSegment = useCallback((segmentId: string) => {
     const segment = segments.find((item) => item.id === segmentId);
-    if (!segment) {
-      return;
-    }
-
+    if (!segment) { return; }
     setSelectedSegmentId(segmentId);
     setSegmentLabel(segment.label);
     setSelectionRange(segment.requestedStartSeconds, segment.requestedEndSeconds);
     seekTo(segment.requestedStartSeconds);
   }, [segments, seekTo, setSelectionRange]);
-
-  const updateSelectedSegment = useCallback(() => {
-    if (!selectedSegmentId) {
-      setError('Select a segment before applying changes.');
-      return;
-    }
-
-    setSegments((current) =>
-      current.map((segment) =>
-        segment.id === selectedSegmentId
-          ? {
-            ...segment,
-            label: segmentLabel.trim() || segment.label,
-            requestedStartSeconds: selection.inPointSeconds,
-            requestedEndSeconds: selection.outPointSeconds,
-          }
-          : segment,
-      ),
-    );
-    setActivityMessage('Updated the selected segment.');
-    setError(null);
-  }, [selectedSegmentId, segmentLabel, selection.inPointSeconds, selection.outPointSeconds]);
 
   const removeSegment = useCallback((segmentId: string) => {
     setSegments((current) => current.filter((segment) => segment.id !== segmentId));
@@ -486,128 +337,117 @@ export const useEditorController = () => {
     }
   }, [selectedSegmentId]);
 
-  const moveSegment = useCallback((segmentId: string, direction: -1 | 1) => {
+  const updateSegmentBoundary = useCallback((segmentId: string, field: 'start' | 'end', seconds: number) => {
+    setSegments((current) =>
+      current.map((segment) => {
+        if (segment.id !== segmentId) { return segment; }
+        if (field === 'start') {
+          const bounded = clamp(seconds, 0, segment.requestedEndSeconds - 0.01);
+          return { ...segment, requestedStartSeconds: bounded };
+        }
+        const bounded = clamp(seconds, segment.requestedStartSeconds + 0.01, sourceDuration || seconds);
+        return { ...segment, requestedEndSeconds: bounded };
+      }),
+    );
+  }, [sourceDuration]);
+
+  const moveSegmentOnTimeline = useCallback((segmentId: string, newStartSeconds: number) => {
+    setSegments((current) =>
+      current.map((segment) => {
+        if (segment.id !== segmentId) { return segment; }
+        const duration = segment.requestedEndSeconds - segment.requestedStartSeconds;
+        const boundedStart = clamp(newStartSeconds, 0, (sourceDuration || newStartSeconds) - duration);
+        return {
+          ...segment,
+          requestedStartSeconds: boundedStart,
+          requestedEndSeconds: boundedStart + duration,
+        };
+      }),
+    );
+  }, [sourceDuration]);
+
+  const reorderSegmentByDrag = useCallback((segmentId: string, newIndex: number) => {
     setSegments((current) => {
       const index = current.findIndex((segment) => segment.id === segmentId);
-      const nextIndex = index + direction;
-      if (index < 0 || nextIndex < 0 || nextIndex >= current.length) {
+      if (index < 0 || newIndex < 0 || newIndex >= current.length || index === newIndex) {
         return current;
       }
-
       const next = [...current];
       const [item] = next.splice(index, 1);
-      next.splice(nextIndex, 0, item);
+      next.splice(newIndex, 0, item);
       return next;
     });
   }, []);
 
-  const toggleSegmentSelected = useCallback((segmentId: string) => {
-    setSegments((current) =>
-      current.map((segment) =>
-        segment.id === segmentId ? { ...segment, selected: !segment.selected } : segment,
-      ),
-    );
-  }, []);
+  const playSegmentsInOrder = useCallback(async () => {
+    if (segments.length === 0) { return; }
+    playSegmentsQueueRef.current = [...segments];
+    playSegmentsIndexRef.current = 0;
+    const first = segments[0];
+    seekTo(first.requestedStartSeconds);
+    const element = previewRef.current;
+    if (element) {
+      await element.play().catch(() => {});
+      setIsPlaying(!element.paused);
+    }
+  }, [segments, seekTo]);
 
-  const duplicateSegment = useCallback((segmentId: string) => {
-    setSegments((current) => {
-      const index = current.findIndex((segment) => segment.id === segmentId);
-      const segment = current[index];
-      if (!segment) {
-        return current;
+  useEffect(() => {
+    const queue = playSegmentsQueueRef.current;
+    if (!queue || !isPlaying) { return; }
+    const index = playSegmentsIndexRef.current;
+    const currentSegment = queue[index];
+    if (!currentSegment) {
+      playSegmentsQueueRef.current = null;
+      return;
+    }
+    if (currentTime >= currentSegment.requestedEndSeconds - 0.05) {
+      const nextIndex = index + 1;
+      if (nextIndex < queue.length) {
+        playSegmentsIndexRef.current = nextIndex;
+        seekTo(queue[nextIndex].requestedStartSeconds);
+      } else {
+        playSegmentsQueueRef.current = null;
+        const element = previewRef.current;
+        if (element) {
+          element.pause();
+          setIsPlaying(false);
+        }
       }
-
-      const duplicate: EditorSegment = {
-        ...segment,
-        id: createSegmentId(),
-        label: `${segment.label} Copy`,
-      };
-
-      const next = [...current];
-      next.splice(index + 1, 0, duplicate);
-      return next;
-    });
-  }, []);
+    }
+  }, [currentTime, isPlaying, seekTo]);
 
   const pickExportDirectory = useCallback(async (): Promise<void> => {
     try {
       const nextDirectory = await yoinkrClient.editor.pickExportDirectory();
-      if (nextDirectory) {
-        setOutputDirectory(nextDirectory);
-      }
+      if (nextDirectory) { setOutputDirectory(nextDirectory); }
     } catch (pickError) {
       setError(pickError instanceof Error ? pickError.message : 'Unable to choose an export folder.');
     }
   }, []);
 
   const pickExportFile = useCallback(async (): Promise<void> => {
-    if (!openResult) {
-      return;
-    }
-
+    if (!openResult) { return; }
     try {
       const nextFile = await yoinkrClient.editor.pickExportFile(buildMergedFileName(openResult.source.fileName));
-      if (nextFile) {
-        setOutputFilePath(nextFile);
-      }
+      if (nextFile) { setOutputFilePath(nextFile); }
     } catch (pickError) {
       setError(pickError instanceof Error ? pickError.message : 'Unable to choose an export destination.');
     }
   }, [openResult]);
 
   const workingSegments = useMemo<EditorSegment[]>(() => {
-    const selectedSegments = segments.filter((segment) => segment.selected);
-    if (selectedSegments.length > 0) {
-      return selectedSegments;
-    }
-
-    if (selection.outPointSeconds <= selection.inPointSeconds) {
-      return [];
-    }
-
-    return [
-      {
-        id: 'selection-preview',
-        label: segmentLabel.trim() || 'Current selection',
-        requestedStartSeconds: selection.inPointSeconds,
-        requestedEndSeconds: selection.outPointSeconds,
-        selected: true,
-        exportStatus: 'planned',
-      },
-    ];
+    if (segments.length > 0) { return segments; }
+    if (selection.outPointSeconds <= selection.inPointSeconds) { return []; }
+    return [{
+      id: 'selection-preview',
+      label: segmentLabel.trim() || 'Current selection',
+      requestedStartSeconds: selection.inPointSeconds,
+      requestedEndSeconds: selection.outPointSeconds,
+      selected: true,
+      exportStatus: 'planned',
+    }];
   }, [segmentLabel, segments, selection.inPointSeconds, selection.outPointSeconds]);
-
-  const refreshExportPreview = useCallback(async (): Promise<void> => {
-    if (!openResult || workingSegments.length === 0) {
-      setExportPreview(null);
-      return;
-    }
-
-    try {
-      setIsPlanningExport(true);
-      const preview = await yoinkrClient.editor.previewExport({
-        sourcePath: openResult.source.sourcePath,
-        sourceKind: openResult.source.sourceKind,
-        segments: workingSegments,
-        exportMode,
-        cutMode,
-        outputDirectory,
-        outputFilePath,
-        baseName: openResult.source.displayName,
-        preserveOriginal: true,
-      });
-      setExportPreview(preview);
-    } catch (previewError) {
-      setExportPreview(null);
-      setError(previewError instanceof Error ? previewError.message : 'Unable to preview the export.');
-    } finally {
-      setIsPlanningExport(false);
-    }
-  }, [cutMode, exportMode, openResult, outputDirectory, outputFilePath, workingSegments]);
-
-  useEffect(() => {
-    void refreshExportPreview();
-  }, [refreshExportPreview]);
 
   const exportMedia = useCallback(async (): Promise<void> => {
     if (!openResult) {
@@ -615,7 +455,7 @@ export const useEditorController = () => {
       return;
     }
     if (workingSegments.length === 0) {
-      setError('Create at least one valid segment or selection before exporting.');
+      setError('Create at least one segment before exporting.');
       return;
     }
 
@@ -628,36 +468,23 @@ export const useEditorController = () => {
       let nextOutputDirectory = outputDirectory;
       let nextOutputFilePath = outputFilePath;
 
-      if ((exportMode === 'separate-files' || exportMode === 'merge-and-separate') && !nextOutputDirectory) {
+      if (!nextOutputDirectory) {
         nextOutputDirectory = await yoinkrClient.editor.pickExportDirectory();
         setOutputDirectory(nextOutputDirectory);
-        if (!nextOutputDirectory) {
-          return;
-        }
-      }
-      if ((exportMode === 'single-cut' || exportMode === 'merge-cuts' || exportMode === 'merge-and-separate') && !nextOutputFilePath) {
-        const suggestedName = exportMode === 'single-cut'
-          ? buildSingleCutFileName(openResult.source.fileName)
-          : buildMergedFileName(openResult.source.fileName);
-        nextOutputFilePath = await yoinkrClient.editor.pickExportFile(suggestedName);
-        setOutputFilePath(nextOutputFilePath);
-        if (!nextOutputFilePath) {
-          return;
-        }
+        if (!nextOutputDirectory) { setIsExporting(false); return; }
       }
 
-      const preview = await yoinkrClient.editor.previewExport({
-        sourcePath: openResult.source.sourcePath,
-        sourceKind: openResult.source.sourceKind,
-        segments: workingSegments,
-        exportMode,
-        cutMode,
-        outputDirectory: nextOutputDirectory,
-        outputFilePath: nextOutputFilePath,
-        baseName: openResult.source.displayName,
-        preserveOriginal: true,
-      });
-      setExportPreview(preview);
+      const needsFilePath = exportMode === 'single-cut' || exportMode === 'merge-cuts' || exportMode === 'merge-and-separate';
+      if (needsFilePath && !nextOutputFilePath) {
+        const name = exportFileName.trim()
+          || (exportMode === 'single-cut' ? buildSingleCutFileName(openResult.source.fileName) : buildMergedFileName(openResult.source.fileName));
+        nextOutputFilePath = `${nextOutputDirectory}\\${name}`;
+        setOutputFilePath(nextOutputFilePath);
+      }
+
+      const userBaseName = exportFileName.trim()
+        ? exportFileName.trim().replace(/\.[^.]+$/, '')
+        : openResult.source.displayName;
 
       const result = await yoinkrClient.editor.exportMedia({
         sourcePath: openResult.source.sourcePath,
@@ -667,25 +494,17 @@ export const useEditorController = () => {
         cutMode,
         outputDirectory: nextOutputDirectory,
         outputFilePath: nextOutputFilePath,
-        baseName: openResult.source.displayName,
+        baseName: userBaseName,
         preserveOriginal: true,
       });
 
       setExportPreview(result.preview);
-      setExportJob({
-        status: 'complete',
-        message: result.message,
-        outputPaths: result.outputPaths,
-      });
+      setExportJob({ status: 'complete', message: result.message, outputPaths: result.outputPaths });
       setActivityMessage(result.message);
     } catch (exportError) {
       const message = exportError instanceof Error ? exportError.message : 'Export failed.';
       setError(message);
-      setExportJob({
-        status: 'error',
-        message,
-        outputPaths: [],
-      });
+      setExportJob({ status: 'error', message, outputPaths: [] });
     } finally {
       setIsExporting(false);
     }
@@ -699,104 +518,30 @@ export const useEditorController = () => {
     }
   }, []);
 
-  const previewWarnings = useMemo(() => {
-    if (!openResult) {
-      return [];
-    }
-
-    const warnings = [...openResult.mediaInfo.warnings];
-    warnings.push(...(timelineAssets?.warnings ?? []));
-    if (!openResult.source.previewSupported) {
-      warnings.push('Preview playback depends on Chromium codec support. Probe/export can still work even when preview does not.');
-    }
-    if ((exportMode === 'merge-cuts' || exportMode === 'merge-and-separate') && !openResult.mediaInfo.mergeCutsSupported) {
-      warnings.push('Merged stream-copy export is not supported for this source container in the current slice.');
-    }
-    if (openResult.mediaInfo.hasVideo) {
-      if (openResult.mediaInfo.keyframeAnalysisStatus === 'available') {
-        warnings.push('Lossless export snaps segment boundaries to surrounding keyframes so clip points stay deterministic.');
-      } else {
-        warnings.push(openResult.mediaInfo.keyframeAnalysisMessage ?? 'Keyframe-safe boundaries could not be verified for this source.');
-      }
-    } else {
-      warnings.push('Audio-only exports can stay exact because they do not depend on video keyframes.');
-    }
-    return warnings;
-  }, [exportMode, openResult, timelineAssets?.warnings]);
-
   useEffect(() => {
-    if (!openResult) {
-      return;
-    }
-
+    if (!openResult) { return; }
     const handleKeyDown = async (event: KeyboardEvent): Promise<void> => {
-      if (isEditableElement(event.target)) {
-        return;
-      }
-
-      if (event.code === 'Space') {
-        event.preventDefault();
-        await togglePlayback();
-        return;
-      }
-
-      if (event.key.toLowerCase() === 'i') {
-        event.preventDefault();
-        setInToCurrent();
-        return;
-      }
-
-      if (event.key.toLowerCase() === 'o') {
-        event.preventDefault();
-        setOutToCurrent();
-        return;
-      }
-
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        if (event.shiftKey) {
-          stepToPreviousKeyframe();
-        } else {
-          stepBy(-1 / 30);
-        }
-        return;
-      }
-
-      if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        if (event.shiftKey) {
-          stepToNextKeyframe();
-        } else {
-          stepBy(1 / 30);
-        }
-        return;
-      }
+      if (isEditableElement(event.target)) { return; }
+      if (event.code === 'Space') { event.preventDefault(); await togglePlayback(); return; }
+      if (event.key.toLowerCase() === 'i') { event.preventDefault(); setInToCurrent(); return; }
+      if (event.key.toLowerCase() === 'o') { event.preventDefault(); setOutToCurrent(); return; }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); stepBy(-1 / 30); return; }
+      if (event.key === 'ArrowRight') { event.preventDefault(); stepBy(1 / 30); return; }
     };
-
     window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [openResult, setInToCurrent, setOutToCurrent, stepBy, stepToNextKeyframe, stepToPreviousKeyframe, togglePlayback]);
+    return () => { window.removeEventListener('keydown', handleKeyDown); };
+  }, [openResult, setInToCurrent, setOutToCurrent, stepBy, togglePlayback]);
 
-  const timelineWindow = useMemo(() => {
-    const visibleDuration = sourceDuration > 0 ? Math.max(4, sourceDuration / Math.max(1, timelineZoom)) : 0;
-    const half = visibleDuration / 2;
-    const startSeconds = Math.max(0, currentTime - half);
-    const endSeconds = Math.min(sourceDuration, startSeconds + visibleDuration);
-    return {
-      zoom: timelineZoom,
-      startSeconds,
-      endSeconds: Math.max(endSeconds, startSeconds),
-      visibleDuration: Math.max(visibleDuration, 0),
-    };
-  }, [currentTime, sourceDuration, timelineZoom]);
+  const segmentsTotalDuration = useMemo(
+    () => segments.reduce((sum, segment) => sum + Math.max(0, segment.requestedEndSeconds - segment.requestedStartSeconds), 0),
+    [segments],
+  );
 
   return {
+    formatTimecode,
     previewRef,
     isDragActive,
     openResult,
-    timelineAssets,
     segments,
     workingSegments,
     selectedSegmentId,
@@ -807,31 +552,25 @@ export const useEditorController = () => {
     exportJob,
     outputDirectory,
     outputFilePath,
+    exportFileName,
     currentTime,
     sourceDuration,
     previewUrl,
     isAudioOnly,
     selection,
-    selectionInputs,
     isPlaying,
-    timelineZoom,
-    timelineWindow,
     isLoadingSource,
-    isLoadingTimelineAssets,
-    isPlanningExport,
     isExporting,
     activityMessage,
     error,
     previewError,
-    previewWarnings,
+    segmentsTotalDuration,
     keyframeTimes,
-    keyframeMarkers,
-    timelineThumbnails,
-    waveformUrl,
     setSegmentLabel,
+    setExportFileName,
     setCutMode,
     setExportMode,
-    setTimelineZoom,
+    closeEdit,
     onDragEnter,
     onDragLeave,
     onDrop,
@@ -840,31 +579,24 @@ export const useEditorController = () => {
     pickExportFile,
     seekTo,
     stepBy,
-    stepToPreviousKeyframe,
-    stepToNextKeyframe,
     togglePlayback,
     setInToCurrent,
     setOutToCurrent,
-    snapInToKeyframe,
-    snapOutToKeyframe,
-    jumpToInPoint,
-    jumpToOutPoint,
     setSelectionRange,
-    updateSelectionInput,
-    commitSelectionInput,
     addSegment,
     loadSegment,
-    updateSelectedSegment,
     removeSegment,
-    moveSegment,
-    toggleSegmentSelected,
-    duplicateSegment,
-    refreshExportPreview,
+    updateSegmentBoundary,
+    moveSegmentOnTimeline,
+    reorderSegmentByDrag,
+    playSegmentsInOrder,
     exportMedia,
     revealOutputPath,
     setCurrentTime,
     setPreviewDuration,
     setPreviewError,
     setIsPlaying,
+    setOutputDirectory,
+    openSource,
   };
 };

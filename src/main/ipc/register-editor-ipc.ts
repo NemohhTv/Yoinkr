@@ -1,7 +1,9 @@
 import { ipcMain } from 'electron';
+import { existsSync } from 'node:fs';
 
 import type { AppContext } from '@main/services/app-context';
 import { ServiceError } from '@main/services/shared/service-error';
+import { findLatestOutputByDownloadId } from '@main/services/tools/download-output-resolver';
 import { ipcChannels } from '@shared/contracts/channels';
 import type { EditorExportRequest, EditorOpenRequest } from '@shared/types/editor';
 
@@ -11,26 +13,37 @@ export const registerEditorIpc = (context: AppContext): void => {
   ipcMain.handle(ipcChannels.editorOpenSource, async (_event, request: EditorOpenRequest) => {
     try {
       let normalizedRequest = context.editorFileService.normalizeOpenRequest(request);
+      const settings = context.settingsService.getSettings();
+      const downloadDir = settings.downloadDirectory || context.pathsService.getPaths().managedDirectories.downloads;
+
       if (normalizedRequest.sourceKind === 'download' && normalizedRequest.downloadId) {
-        try {
-          context.editorFileService.assertSourceExists(normalizedRequest.sourcePath);
-        } catch (error) {
-          if (error instanceof ServiceError && error.code === 'SOURCE_FILE_MISSING') {
-            const historyRecord = context.downloadHistoryRepository.getById(normalizedRequest.downloadId);
-            if (historyRecord?.outputPath) {
+        let pathToUse = normalizedRequest.sourcePath;
+        if (!existsSync(pathToUse)) {
+          const historyRecord = context.downloadHistoryRepository.getById(normalizedRequest.downloadId);
+          if (historyRecord?.outputPath) {
+            normalizedRequest = context.editorFileService.normalizeOpenRequest({
+              ...normalizedRequest,
+              sourcePath: historyRecord.outputPath,
+            });
+            pathToUse = normalizedRequest.sourcePath;
+          }
+          if (!existsSync(pathToUse)) {
+            const scanned = findLatestOutputByDownloadId(downloadDir, normalizedRequest.downloadId);
+            if (scanned) {
               normalizedRequest = context.editorFileService.normalizeOpenRequest({
                 ...normalizedRequest,
-                sourcePath: historyRecord.outputPath,
+                sourcePath: scanned,
               });
+              const rec = historyRecord ?? context.downloadHistoryRepository.getById(normalizedRequest.downloadId);
+              if (rec) {
+                context.downloadHistoryRepository.save({ ...rec, outputPath: scanned });
+              }
             }
-          } else {
-            throw error;
           }
         }
       }
 
       context.editorFileService.assertSourceExists(normalizedRequest.sourcePath);
-      const settings = context.settingsService.getSettings();
       const mediaInfo = await context.ffprobeAnalysisService.inspectSource(normalizedRequest.sourcePath, settings);
       const source = context.editorFileService.buildSourceSummary(normalizedRequest, mediaInfo);
       return ok({ request: normalizedRequest, source, mediaInfo });

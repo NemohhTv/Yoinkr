@@ -8,7 +8,6 @@ export const EditorPlayerPanel = ({ controller }: { controller: EditorController
     openResult,
     previewUrl,
     isAudioOnly,
-    currentTime,
     previewError,
     setCurrentTime,
     setPreviewDuration,
@@ -21,25 +20,12 @@ export const EditorPlayerPanel = ({ controller }: { controller: EditorController
   }
 
   return (
-    <section className="panel editor-player-panel">
-      <div className="editor-panel-heading">
-        <div>
-          <p className="eyebrow">Preview</p>
-          <h2>Player</h2>
-        </div>
-        <div className="editor-time-readout">
-          <strong>{currentTime.toFixed(3)}s</strong>
-          <span className="muted">current playhead</span>
-        </div>
-      </div>
-
+    <div className="editor-player-panel">
       {openResult.source.previewSupported && previewUrl ? (
         isAudioOnly ? (
           <audio
             key={previewUrl}
-            ref={(node) => {
-              previewRef.current = node;
-            }}
+            ref={(node) => { previewRef.current = node; }}
             className="editor-preview-audio"
             src={previewUrl}
             controls
@@ -48,14 +34,12 @@ export const EditorPlayerPanel = ({ controller }: { controller: EditorController
             onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
-            onError={() => setPreviewError('Chromium could not preview this source, but probe/export can still work.')}
+            onError={() => setPreviewError('Preview unavailable for this format.')}
           />
         ) : (
           <video
             key={previewUrl}
-            ref={(node) => {
-              previewRef.current = node;
-            }}
+            ref={(node) => { previewRef.current = node; }}
             className="editor-preview-video"
             src={previewUrl}
             controls
@@ -64,16 +48,13 @@ export const EditorPlayerPanel = ({ controller }: { controller: EditorController
             onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
-            onError={() => setPreviewError('Chromium could not preview this source, but probe/export can still work.')}
+            onError={() => setPreviewError('Preview unavailable for this format.')}
           />
         )
       ) : (
-        <div className="workspace-preview">
-          <div className="workspace-strip">Preview is unavailable for this container in Chromium.</div>
-        </div>
+        <div className="editor-no-preview">Preview unavailable for this container.</div>
       )}
-
       {previewError && <div className="tool-error-msg">{previewError}</div>}
-    </section>
+    </div>
   );
 };

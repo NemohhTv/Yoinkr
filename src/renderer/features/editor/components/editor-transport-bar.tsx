@@ -4,70 +4,88 @@ type EditorController = ReturnType<typeof useEditorController>;
 
 export const EditorTransportBar = ({ controller }: { controller: EditorController }): JSX.Element => {
   const {
+    formatTimecode,
     currentTime,
     isPlaying,
-    keyframeTimes,
-    segmentLabel,
-    setSegmentLabel,
-    stepBy,
-    stepToPreviousKeyframe,
-    stepToNextKeyframe,
+    isExporting,
+    exportMode,
+    outputDirectory,
+    exportFileName,
+    exportJob,
     togglePlayback,
     setInToCurrent,
     setOutToCurrent,
-    jumpToInPoint,
-    jumpToOutPoint,
-    snapInToKeyframe,
-    snapOutToKeyframe,
     addSegment,
-    updateSelectedSegment,
-    selectedSegmentId,
+    setExportMode,
+    setExportFileName,
+    pickExportDirectory,
+    exportMedia,
+    revealOutputPath,
+    setOutputDirectory,
   } = controller;
 
   return (
-    <section className="panel editor-transport-panel">
-      <div className="editor-transport-row">
+    <div className="editor-bottom-bar">
+      <div className="editor-transport-left">
         <button className="button secondary" onClick={() => void togglePlayback()}>
-          {isPlaying ? 'Pause' : 'Play'}
+          {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
-        <button className="button secondary" onClick={() => stepBy(-1 / 30)}>Prev frame</button>
-        <button className="button secondary" onClick={() => stepBy(1 / 30)}>Next frame</button>
-        <button className="button secondary" onClick={stepToPreviousKeyframe} disabled={keyframeTimes.length === 0}>
-          Prev keyframe
-        </button>
-        <button className="button secondary" onClick={stepToNextKeyframe} disabled={keyframeTimes.length === 0}>
-          Next keyframe
-        </button>
-        <button className="button secondary" onClick={setInToCurrent}>Mark in</button>
-        <button className="button secondary" onClick={setOutToCurrent}>Mark out</button>
-        <button className="button secondary" onClick={jumpToInPoint}>Jump in</button>
-        <button className="button secondary" onClick={jumpToOutPoint}>Jump out</button>
-        <button className="button secondary" onClick={snapInToKeyframe} disabled={keyframeTimes.length === 0}>
-          Snap in
-        </button>
-        <button className="button secondary" onClick={snapOutToKeyframe} disabled={keyframeTimes.length === 0}>
-          Snap out
-        </button>
+        <button className="button secondary" onClick={setInToCurrent} title="Set start (I)">Set start</button>
+        <button className="button secondary" onClick={setOutToCurrent} title="Set end (O)">Set end</button>
+        <button className="button" onClick={addSegment}>Add segment</button>
+
+        <span className="editor-timecode">{formatTimecode(currentTime)}</span>
       </div>
 
-      <div className="editor-transport-footer">
-        <div className="editor-time-readout">
-          <strong>{currentTime.toFixed(3)}s</strong>
-          <span className="muted">Space = play/pause, I = in, O = out, Shift+Arrows = keyframes</span>
-        </div>
+      <div className="editor-transport-right">
+        <input
+          type="text"
+          className="editor-filename-input"
+          value={exportFileName}
+          onChange={(event) => setExportFileName(event.target.value)}
+          placeholder="File name..."
+          title="Export file name"
+        />
 
-        <div className="editor-transport-actions">
+        <div className="editor-export-path" title={outputDirectory ?? 'No export folder set'}>
           <input
-            value={segmentLabel}
-            onChange={(event) => setSegmentLabel(event.target.value)}
-            placeholder="Clip label"
+            type="text"
+            readOnly
+            value={outputDirectory ?? ''}
+            placeholder="Folder..."
+            onClick={() => void pickExportDirectory()}
+            onChange={(event) => setOutputDirectory(event.target.value)}
           />
-          <button className="button" onClick={addSegment}>Add segment</button>
-          <button className="button secondary" onClick={updateSelectedSegment} disabled={!selectedSegmentId}>
-            Update selected
-          </button>
+          <button className="button secondary" onClick={() => void pickExportDirectory()}>Browse</button>
         </div>
+
+        <select
+          className="editor-export-mode-select"
+          value={exportMode}
+          onChange={(event) => setExportMode(event.target.value as typeof exportMode)}
+        >
+          <option value="separate-files">Separate files</option>
+          <option value="merge-cuts">Merge cuts</option>
+        </select>
+
+        <button
+          className="button primary"
+          disabled={isExporting}
+          onClick={() => void exportMedia()}
+        >
+          {isExporting ? 'Exporting...' : 'Export'}
+        </button>
+
+        {exportJob.status === 'complete' && exportJob.outputPaths[0] && (
+          <button
+            className="button secondary"
+            onClick={() => void revealOutputPath(exportJob.outputPaths[0])}
+            title="Reveal exported file"
+          >
+            📂
+          </button>
+        )}
       </div>
-    </section>
+    </div>
   );
 };

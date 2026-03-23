@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { AppPathsService } from '@main/services/paths/app-paths-service';
 import { ServiceError } from '@main/services/shared/service-error';
 import type { BinaryResolver } from './binary-resolver';
+import { findLatestOutputByDownloadId } from './download-output-resolver';
 import { buildYtDlpCookieArgs } from './yt-dlp-cookie-args';
 import type { ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
 import type { AppSettings } from '@shared/types/settings';
@@ -45,7 +46,7 @@ export class YtDlpDownloadService {
     const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
     mkdirSync(tempDir, { recursive: true });
-    const outputTemplate = join(downloadDir, '%(title).200B.%(ext)s');
+    const outputTemplate = join(downloadDir, `${request.id}__%(title).200B.%(ext)s`);
 
     onProgress({
       id: request.id,
@@ -198,6 +199,10 @@ export class YtDlpDownloadService {
 
         if (exitCode === 0) {
           rmSync(tempDir, { recursive: true, force: true });
+          let finalPath = lastOutputPath;
+          if (!finalPath || !existsSync(finalPath)) {
+            finalPath = findLatestOutputByDownloadId(downloadDir, request.id);
+          }
           onProgress({
             id: request.id,
             phase: 'complete',
@@ -206,7 +211,7 @@ export class YtDlpDownloadService {
             eta: '',
             message: 'Download complete!',
           });
-          resolve({ id: request.id, success: true, outputPath: lastOutputPath });
+          resolve({ id: request.id, success: true, outputPath: finalPath });
         } else {
           rmSync(tempDir, { recursive: true, force: true });
           const errorMsg = this.extractErrorMessage(stderr);
@@ -237,6 +242,10 @@ export class YtDlpDownloadService {
       '-P', `temp:${tempDir}`,
       '-o', outputTemplate,
     ];
+
+    if (process.platform === 'win32') {
+      args.push('--windows-filenames');
+    }
 
     args.push(...buildYtDlpCookieArgs(settings, this.pathsService));
 
