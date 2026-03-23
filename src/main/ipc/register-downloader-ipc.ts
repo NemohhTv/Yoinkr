@@ -2,7 +2,7 @@ import { ipcMain } from 'electron';
 
 import type { AppContext } from '@main/services/app-context';
 import { ServiceError } from '@main/services/shared/service-error';
-import type { DownloadDraft } from '@shared/types/downloader';
+import type { DownloadDraft, DownloadHistoryRecord, ItemDownloadRequest } from '@shared/types/downloader';
 import { ipcChannels } from '@shared/contracts/channels';
 
 import { fail, ok } from './result';
@@ -37,4 +37,60 @@ export const registerDownloaderIpc = (context: AppContext): void => {
       }
     },
   );
+
+  ipcMain.handle(ipcChannels.downloaderStartItem, async (event, request: ItemDownloadRequest) => {
+    try {
+      const settings = context.settingsService.getSettings();
+      const result = await context.ytDlpDownloadService.downloadItem(request, settings, (progress) => {
+        event.sender.send(ipcChannels.downloaderItemProgress, progress);
+      });
+      return ok(result);
+    } catch (error) {
+      if (error instanceof ServiceError) {
+        return fail(error.code, error.message, error.details);
+      }
+      const message = error instanceof Error ? error.message : 'Download failed.';
+      return fail('DOWNLOAD_FAILED', message);
+    }
+  });
+
+  ipcMain.handle(ipcChannels.downloaderCancelItem, async (_event, id: string) => {
+    try {
+      const cancelled = context.ytDlpDownloadService.cancelItem(id);
+      return ok(cancelled);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to cancel download.';
+      return fail('CANCEL_FAILED', message);
+    }
+  });
+
+  ipcMain.handle(ipcChannels.downloaderSaveHistory, async (_event, record: DownloadHistoryRecord) => {
+    try {
+      const saved = context.downloadHistoryRepository.save(record);
+      return ok(saved);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to save history.';
+      return fail('HISTORY_SAVE_FAILED', message);
+    }
+  });
+
+  ipcMain.handle(ipcChannels.downloaderDeleteHistory, async (_event, id: string) => {
+    try {
+      const deleted = context.downloadHistoryRepository.delete(id);
+      return ok(deleted);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to delete history record.';
+      return fail('HISTORY_DELETE_FAILED', message);
+    }
+  });
+
+  ipcMain.handle(ipcChannels.downloaderGetHistory, async () => {
+    try {
+      const records = context.downloadHistoryRepository.getAll();
+      return ok(records);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to load history.';
+      return fail('HISTORY_LOAD_FAILED', message);
+    }
+  });
 };

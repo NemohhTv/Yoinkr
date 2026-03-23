@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 import { app, ipcMain, shell } from 'electron';
 
 import type { AppContext } from '@main/services/app-context';
@@ -27,7 +30,17 @@ export const registerAppIpc = (context: AppContext): void => {
       return fail('INVALID_PATH', 'A valid path is required.');
     }
 
-    shell.showItemInFolder(targetPath);
-    return ok(true);
+    if (existsSync(targetPath)) {
+      shell.showItemInFolder(targetPath);
+      return ok(true);
+    }
+
+    const parentDir = dirname(targetPath);
+    if (existsSync(parentDir)) {
+      shell.openPath(parentDir);
+      return ok(true);
+    }
+
+    return fail('FILE_NOT_FOUND', `File not found: ${targetPath}`);
   });
 };

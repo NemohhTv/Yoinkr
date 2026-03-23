@@ -1,11 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
+  AudioPreference,
   DownloadDraft,
   DownloadFormatOption,
+  DownloadHistoryRecord,
   DownloadMediaType,
   DownloadMetadata,
   DownloadUrlValidation,
+  ItemDownloadProgress,
 } from '@shared/types/downloader';
 import type { OutputFormat } from '@shared/types/settings';
 
@@ -23,7 +26,7 @@ const initialForm = {
   fileType: 'mp4' as OutputFormat,
   qualityTarget: 'best' as DownloadDraft['qualityTarget'],
   audioOnly: false,
-  remuxIfPossible: true,
+  audioPreference: 'aac' as AudioPreference,
   allowReencodeFallback: false,
 };
 
@@ -35,12 +38,16 @@ export interface QueueCard {
   extractor: string;
   durationText: string;
   sizeText: string;
-  status: 'queued' | 'staged' | 'processing';
-  progressLabel: string;
+  status: 'queued' | 'staged' | 'downloading' | 'merging' | 'converting' | 'complete' | 'error';
+  progressPercent: number;
+  progressMessage: string;
+  outputPath: string | null;
   mediaType: DownloadMediaType;
   fileType: OutputFormat;
   qualityTarget: DownloadDraft['qualityTarget'];
   audioOnly: boolean;
+  audioPreference: AudioPreference;
+  allowReencodeFallback: boolean;
 }
 
 interface DownloaderFormState {
@@ -49,65 +56,9 @@ interface DownloaderFormState {
   fileType: OutputFormat;
   qualityTarget: DownloadDraft['qualityTarget'];
   audioOnly: boolean;
-  remuxIfPossible: boolean;
+  audioPreference: AudioPreference;
   allowReencodeFallback: boolean;
 }
-
-export interface MediaLibraryCard {
-  id: string;
-  title: string;
-  sourceUrl: string;
-  state: 'downloaded' | 'edited' | 'imported';
-  format: string;
-  resolution: string;
-  durationText: string;
-  sizeText: string;
-  locationLabel: string;
-  updatedAt: string;
-  thumbnailUrl: string;
-}
-
-const initialHistoryItems: MediaLibraryCard[] = [
-  {
-    id: 'history-1',
-    title: 'City B-Roll Assembly',
-    sourceUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-    state: 'downloaded',
-    format: 'MP4',
-    resolution: '1080p',
-    durationText: '08:42',
-    sizeText: '412 MB',
-    locationLabel: 'Downloads',
-    updatedAt: 'Today · 2:14 PM',
-    thumbnailUrl: 'https://placehold.co/320x180/111827/FFFFFF?text=City+B-Roll',
-  },
-  {
-    id: 'history-2',
-    title: 'Interview Sync Pull',
-    sourceUrl: 'https://www.youtube.com/watch?v=LXb3EKWsInQ',
-    state: 'edited',
-    format: 'MKV',
-    resolution: '2160p',
-    durationText: '19:06',
-    sizeText: '1.8 GB',
-    locationLabel: 'Exports',
-    updatedAt: 'Yesterday · 9:27 PM',
-    thumbnailUrl: 'https://placehold.co/320x180/1f2937/FFFFFF?text=Interview+Sync',
-  },
-  {
-    id: 'history-3',
-    title: 'Local Screen Capture',
-    sourceUrl: '',
-    state: 'imported',
-    format: 'MP4',
-    resolution: '1440p',
-    durationText: '05:18',
-    sizeText: '223 MB',
-    locationLabel: 'Projects',
-    updatedAt: 'Mar 21 · 4:03 PM',
-    thumbnailUrl: 'https://placehold.co/320x180/172554/FFFFFF?text=Screen+Capture',
-  },
-];
 
 const outputFormats: OutputFormat[] = ['original', 'mp4', 'mkv', 'webm', 'mp3', 'm4a', 'wav', 'flac'];
 
@@ -148,6 +99,79 @@ const resolveQualityTarget = (
   return 'custom';
 };
 
+export interface DerivedResolution {
+  label: string;
+  qualityTarget: DownloadDraft['qualityTarget'];
+  height: number;
+  fps: number;
+}
+
+const deriveResolutions = (formats: DownloadFormatOption[]): DerivedResolution[] => {
+  const byHeight = new Map<number, number>();
+
+  for (const f of formats) {
+    if (!f.hasVideo || !f.height) continue;
+    const fps = f.fps ?? 30;
+    const existing = byHeight.get(f.height);
+    if (!existing || fps > existing) {
+      byHeight.set(f.height, fps);
+    }
+  }
+
+  return Array.from(byHeight.entries())
+    .map(([height, fps]) => ({
+      label: `${height}p${fps}`,
+      qualityTarget: resolveQualityTarget({ audioOnly: false, height }),
+      height,
+      fps,
+    }))
+    .sort((a, b) => b.height - a.height || b.fps - a.fps);
+};
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const estimateSize = (
+  formats: DownloadFormatOption[],
+  mediaType: DownloadMediaType,
+  qualityTarget: DownloadDraft['qualityTarget'],
+): string | null => {
+  const heightMap: Record<string, number> = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '480p': 480 };
+  const targetHeight = qualityTarget === 'best' ? Infinity : (heightMap[qualityTarget] ?? Infinity);
+
+  if (mediaType === 'audio-only') {
+    const best = formats
+      .filter((f) => f.hasAudio && !f.hasVideo)
+      .sort((a, b) => (b.filesizeBytes ?? b.filesizeApproxBytes ?? 0) - (a.filesizeBytes ?? a.filesizeApproxBytes ?? 0))[0];
+    return best?.estimatedSizeText ?? null;
+  }
+
+  const videoFormats = formats.filter((f) => f.hasVideo && f.height);
+  const matchedVideo =
+    targetHeight === Infinity
+      ? videoFormats.sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+      : videoFormats.filter((f) => (f.height ?? 0) <= targetHeight).sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+        ?? videoFormats[videoFormats.length - 1];
+
+  if (!matchedVideo) return null;
+  const videoBytes = matchedVideo.filesizeBytes ?? matchedVideo.filesizeApproxBytes ?? 0;
+
+  if (mediaType === 'video-only') {
+    return videoBytes > 0 ? formatBytes(videoBytes) : matchedVideo.estimatedSizeText;
+  }
+
+  const bestAudio = formats
+    .filter((f) => f.hasAudio && !f.hasVideo)
+    .sort((a, b) => (b.filesizeBytes ?? b.filesizeApproxBytes ?? 0) - (a.filesizeBytes ?? a.filesizeApproxBytes ?? 0))[0];
+  const audioBytes = bestAudio?.filesizeBytes ?? bestAudio?.filesizeApproxBytes ?? 0;
+  const total = videoBytes + audioBytes;
+
+  return total > 0 ? formatBytes(total) : matchedVideo.estimatedSizeText;
+};
+
 const getActiveValidation = (
   validation: DownloadUrlValidation[],
   activeValidationUrl: string | null,
@@ -162,7 +186,6 @@ export const useDownloaderController = () => {
   const [activeValidationUrl, setActiveValidationUrl] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<DownloadMetadata | null>(null);
   const [queueItems, setQueueItems] = useState<QueueCard[]>([]);
-  const [historyItems] = useState<MediaLibraryCard[]>(initialHistoryItems);
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activityMessage, setActivityMessage] = useState<string | null>(null);
@@ -172,18 +195,27 @@ export const useDownloaderController = () => {
     [validation, activeValidationUrl],
   );
 
-  const queueSummary = useMemo(
-    () => ({
-      total: queueItems.length,
-      staged: queueItems.filter((item) => item.status === 'staged').length,
-      processing: queueItems.filter((item) => item.status === 'processing').length,
-    }),
-    [queueItems],
-  );
+  const queueSummary = useMemo(() => {
+    const total = queueItems.length;
+    const pending = queueItems.filter((i) => i.status === 'staged' || i.status === 'error').length;
+    const active = queueItems.filter((i) => i.status === 'downloading' || i.status === 'merging' || i.status === 'converting').length;
+    const complete = queueItems.filter((i) => i.status === 'complete').length;
+    return { total, pending, active, complete };
+  }, [queueItems]);
 
   const activeMetadataFormats = useMemo(
     () => metadata?.availableFormats ?? [],
     [metadata],
+  );
+
+  const derivedResolutions = useMemo(
+    () => deriveResolutions(metadata?.availableFormats ?? []),
+    [metadata],
+  );
+
+  const estimatedSizeText = useMemo(
+    () => metadata ? estimateSize(metadata.availableFormats, form.mediaType, form.qualityTarget) : null,
+    [metadata, form.mediaType, form.qualityTarget],
   );
 
   const updateField = <K extends keyof typeof form>(key: K, value: (typeof form)[K]): void => {
@@ -266,17 +298,15 @@ export const useDownloaderController = () => {
   };
 
   const enqueueDraft = async (): Promise<void> => {
-    const nextValidation = validation.length > 0 ? validation : await validateUrls();
-    const nextActive = getActiveValidation(nextValidation, activeValidationUrl);
+    const nextValidation = await validateUrls();
+    const nextActive = getActiveValidation(nextValidation, null);
 
     if (!nextActive) {
       setError('Validate at least one URL before saving a draft.');
       return;
     }
 
-    const nextMetadata = metadata?.normalizedUrl === nextActive.normalizedUrl
-      ? metadata
-      : await inspectUrl(nextActive.normalizedUrl);
+    const nextMetadata = await inspectUrl(nextActive.normalizedUrl);
 
     try {
       setError(null);
@@ -286,7 +316,7 @@ export const useDownloaderController = () => {
         qualityTarget: form.mediaType === 'audio-only' ? 'audio-only' : form.qualityTarget,
         outputFormat: form.fileType,
         audioOnly: form.mediaType === 'audio-only' || form.audioOnly,
-        remuxIfPossible: form.remuxIfPossible,
+        remuxIfPossible: true,
         allowReencodeFallback: form.allowReencodeFallback,
       });
       setQueueItems((current) => [
@@ -299,11 +329,15 @@ export const useDownloaderController = () => {
           durationText: nextMetadata?.durationText ?? 'Pending',
           sizeText: nextMetadata?.availableFormats[0]?.estimatedSizeText ?? 'Pending',
           status: 'staged',
-          progressLabel: 'Staged for Phase 2 execution',
+          progressPercent: 0,
+          progressMessage: '',
+          outputPath: null,
           mediaType: form.mediaType,
           fileType: draft.outputFormat,
           qualityTarget: draft.qualityTarget,
           audioOnly: draft.audioOnly,
+          audioPreference: form.audioPreference,
+          allowReencodeFallback: form.allowReencodeFallback,
         },
         ...current,
       ]);
@@ -345,7 +379,7 @@ export const useDownloaderController = () => {
 
   const updateQueueItem = (
     id: string,
-    patch: Partial<Pick<QueueCard, 'mediaType' | 'fileType' | 'qualityTarget' | 'audioOnly'>>,
+    patch: Partial<Pick<QueueCard, 'mediaType' | 'fileType' | 'qualityTarget' | 'audioOnly' | 'audioPreference' | 'allowReencodeFallback'>>,
   ): void => {
     setQueueItems((current) =>
       current.map((item) => {
@@ -387,9 +421,166 @@ export const useDownloaderController = () => {
   );
 
   const removeQueueItem = (id: string): void => {
-    setQueueItems((current) => current.filter((item) => item.id !== id));
-    setActivityMessage('Removed staged item from the downloader queue preview.');
+    const item = queueItems.find((q) => q.id === id);
+    setQueueItems((current) => current.filter((q) => q.id !== id));
+    if (item?.status === 'complete') {
+      yoinkrClient.downloader.deleteHistory(id).catch(() => {});
+    }
+    setActivityMessage('Removed item from queue.');
   };
+
+  useEffect(() => {
+    yoinkrClient.downloader.getHistory().then((records) => {
+      const historyCards: QueueCard[] = records.map((r) => ({
+        id: r.id,
+        title: r.title,
+        sourceUrl: r.sourceUrl,
+        thumbnailUrl: r.thumbnailUrl,
+        extractor: r.extractor,
+        durationText: r.durationText,
+        sizeText: r.sizeText,
+        status: 'complete' as const,
+        progressPercent: 100,
+        progressMessage: 'Download complete',
+        outputPath: r.outputPath,
+        mediaType: r.mediaType,
+        fileType: r.fileType,
+        qualityTarget: r.qualityTarget,
+        audioOnly: r.mediaType === 'audio-only',
+        audioPreference: 'aac' as AudioPreference,
+        allowReencodeFallback: false,
+      }));
+      if (historyCards.length > 0) {
+        setQueueItems((current) => {
+          const existingIds = new Set(current.map((c) => c.id));
+          const newCards = historyCards.filter((h) => !existingIds.has(h.id));
+          return [...current, ...newCards];
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
+  const unsubItemProgressRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    unsubItemProgressRef.current = yoinkrClient.downloader.onItemProgress((progress: ItemDownloadProgress) => {
+      setQueueItems((current) =>
+        current.map((item) => {
+          if (item.id !== progress.id) return item;
+          return {
+            ...item,
+            status: progress.phase,
+            progressPercent: progress.percent,
+            progressMessage: progress.message,
+          };
+        }),
+      );
+    });
+
+    return () => {
+      unsubItemProgressRef.current?.();
+    };
+  }, []);
+
+  const downloadItem = useCallback(async (id: string): Promise<void> => {
+    const item = queueItems.find((q) => q.id === id);
+    if (!item || item.status === 'downloading' || item.status === 'merging' || item.status === 'converting') return;
+
+    setQueueItems((current) =>
+      current.map((q) =>
+        q.id === id ? { ...q, status: 'downloading' as const, progressPercent: 0, progressMessage: 'Starting...' } : q,
+      ),
+    );
+
+    try {
+      const result = await yoinkrClient.downloader.startItem({
+        id: item.id,
+        url: item.sourceUrl,
+        mediaType: item.mediaType,
+        qualityTarget: item.qualityTarget,
+        outputFormat: item.fileType,
+        audioOnly: item.audioOnly,
+        audioPreference: item.audioPreference,
+        allowReencodeFallback: item.allowReencodeFallback,
+        title: item.title,
+      });
+
+      setQueueItems((current) =>
+        current.map((q) => {
+          if (q.id !== id) return q;
+          return {
+            ...q,
+            status: result.success ? 'complete' : 'error',
+            progressPercent: result.success ? 100 : 0,
+            progressMessage: result.success ? 'Download complete!' : (result.error ?? 'Download failed.'),
+            outputPath: result.outputPath ?? null,
+          };
+        }),
+      );
+
+      if (result.success) {
+        setActivityMessage(`Downloaded: ${item.title}`);
+        const historyRecord: DownloadHistoryRecord = {
+          id: item.id,
+          title: item.title,
+          sourceUrl: item.sourceUrl,
+          thumbnailUrl: item.thumbnailUrl,
+          extractor: item.extractor,
+          durationText: item.durationText,
+          sizeText: item.sizeText,
+          mediaType: item.mediaType,
+          fileType: item.fileType,
+          qualityTarget: item.qualityTarget,
+          outputPath: result.outputPath ?? null,
+          completedAt: new Date().toISOString(),
+        };
+        yoinkrClient.downloader.saveHistory(historyRecord).catch(() => {});
+      } else {
+        setError(result.error ?? 'Download failed.');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Download failed.';
+      setError(message);
+      setQueueItems((current) =>
+        current.map((q) =>
+          q.id === id ? { ...q, status: 'error' as const, progressPercent: 0, progressMessage: message } : q,
+        ),
+      );
+    }
+  }, [queueItems]);
+
+  const cancelItem = useCallback(async (id: string): Promise<void> => {
+    try {
+      await yoinkrClient.downloader.cancelItem(id);
+      setQueueItems((current) =>
+        current.map((q) =>
+          q.id === id ? { ...q, status: 'error' as const, progressPercent: 0, progressMessage: 'Cancelled' } : q,
+        ),
+      );
+      setActivityMessage('Download cancelled.');
+    } catch {
+      setError('Could not cancel download.');
+    }
+  }, []);
+
+  const revealFile = useCallback(async (outputPath: string): Promise<void> => {
+    try {
+      await yoinkrClient.app.revealPath(outputPath);
+    } catch {
+      setError('Could not open file location.');
+    }
+  }, []);
+
+  const pasteFromClipboard = useCallback(async (): Promise<void> => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        setForm((current) => ({ ...current, urlInput: text.trim() }));
+      }
+    } catch {
+      /* clipboard access denied — no-op */
+    }
+  }, []);
 
   const triggerPlaceholderAction = (message: string): void => {
     setActivityMessage(message);
@@ -401,10 +592,11 @@ export const useDownloaderController = () => {
     activeValidation,
     metadata,
     activeMetadataFormats,
+    derivedResolutions,
+    estimatedSizeText,
     availableFileTypes,
     queueItems,
     queueSummary,
-    historyItems,
     isLoadingMetadata,
     error,
     activityMessage,
@@ -416,6 +608,10 @@ export const useDownloaderController = () => {
     applyFormatSuggestion,
     updateQueueItem,
     removeQueueItem,
+    downloadItem,
+    cancelItem,
+    revealFile,
+    pasteFromClipboard,
     triggerPlaceholderAction,
   };
 };

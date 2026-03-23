@@ -1,6 +1,7 @@
 import type { OutputFormat } from './settings';
 
 export type DownloadMediaType = 'video-audio' | 'video-only' | 'audio-only';
+export type AudioPreference = 'best' | 'aac' | 'opus';
 export type DownloadValidationErrorCode =
   | 'INVALID_URL'
   | 'UNSUPPORTED_URL'
@@ -74,4 +75,47 @@ export interface DownloadDraft {
   allowReencodeFallback: boolean;
   status: 'draft' | 'queued';
   createdAt: string;
+}
+
+export interface ItemDownloadRequest {
+  id: string;
+  url: string;
+  mediaType: DownloadMediaType;
+  qualityTarget: DownloadDraft['qualityTarget'];
+  outputFormat: OutputFormat;
+  audioOnly: boolean;
+  audioPreference: AudioPreference;
+  allowReencodeFallback: boolean;
+  title: string;
+}
+
+export interface ItemDownloadProgress {
+  id: string;
+  phase: 'downloading' | 'merging' | 'converting' | 'complete' | 'error';
+  percent: number;
+  speed: string;
+  eta: string;
+  message: string;
+}
+
+export interface ItemDownloadResult {
+  id: string;
+  success: boolean;
+  outputPath: string | null;
+  error?: string;
+}
+
+export interface DownloadHistoryRecord {
+  id: string;
+  title: string;
+  sourceUrl: string;
+  thumbnailUrl: string;
+  extractor: string;
+  durationText: string;
+  sizeText: string;
+  mediaType: DownloadMediaType;
+  fileType: OutputFormat;
+  qualityTarget: DownloadDraft['qualityTarget'];
+  outputPath: string | null;
+  completedAt: string;
 }

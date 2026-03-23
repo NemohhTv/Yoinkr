@@ -25,6 +25,8 @@ export const useSettingsController = () => {
     'ffmpeg-bundle': { isDownloading: false, progress: null },
   });
 
+  const [cookieTestResult, setCookieTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
   const unsubProgressRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -77,6 +79,15 @@ export const useSettingsController = () => {
   }, [applySettings]);
 
   const updateField = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void => {
+    if (
+      key === 'ytDlpCookieMode'
+      || key === 'ytDlpBrowserProfile'
+      || key === 'ytDlpCookiesFilePath'
+      || key === 'ytDlpCookiesPastedText'
+      || key === 'preferredBrowser'
+    ) {
+      setCookieTestResult(null);
+    }
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
@@ -87,6 +98,41 @@ export const useSettingsController = () => {
     const selectedPath = await yoinkrClient.settings.pickDirectory(title);
     if (selectedPath) {
       updateField(field, selectedPath);
+    }
+  };
+
+  const pickCookiesFile = async (): Promise<void> => {
+    const selectedPath = await yoinkrClient.settings.pickCookiesFile();
+    if (selectedPath) {
+      updateField('ytDlpCookiesFilePath', selectedPath);
+      setCookieTestResult(null);
+    }
+  };
+
+  const testYtDlpCookies = async (): Promise<void> => {
+    if (!draft) {
+      return;
+    }
+    setCookieTestResult(null);
+    setError(null);
+    try {
+      const authPatch = {
+        ytDlpCookieMode: draft.ytDlpCookieMode,
+        ytDlpBrowserProfile: draft.ytDlpBrowserProfile,
+        ytDlpCookiesFilePath: draft.ytDlpCookiesFilePath,
+        ytDlpCookiesPastedText: draft.ytDlpCookiesPastedText,
+        preferredBrowser: draft.preferredBrowser,
+      } as const;
+      const saved = await yoinkrClient.settings.update(authPatch);
+      applySettings(saved);
+      setDraft(saved);
+      const result = await yoinkrClient.settings.testYtDlpCookies(authPatch);
+      setCookieTestResult(result);
+    } catch (testError) {
+      setCookieTestResult({
+        ok: false,
+        message: testError instanceof Error ? testError.message : 'Cookie test failed.',
+      });
     }
   };
 
@@ -172,8 +218,11 @@ export const useSettingsController = () => {
     error,
     isSaving,
     downloadStates,
+    cookieTestResult,
     updateField,
     pickDirectory,
+    pickCookiesFile,
+    testYtDlpCookies,
     chooseBinaryPath,
     downloadTool,
     save,

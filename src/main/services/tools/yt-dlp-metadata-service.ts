@@ -1,3 +1,4 @@
+import type { AppPathsService } from '@main/services/paths/app-paths-service';
 import type { ProcessRunner } from '@main/services/shared/process-runner';
 import { ServiceError } from '@main/services/shared/service-error';
 import type {
@@ -8,6 +9,7 @@ import type {
 import type { AppSettings } from '@shared/types/settings';
 
 import { BinaryResolver } from './binary-resolver';
+import { buildYtDlpCookieArgs, getYtDlpCookieCacheFingerprint } from './yt-dlp-cookie-args';
 import type { MetadataCache } from './metadata-cache';
 
 interface YtDlpChapter {
@@ -54,6 +56,7 @@ export class YtDlpMetadataService {
     private readonly processRunner: ProcessRunner,
     private readonly binaryResolver: BinaryResolver,
     private readonly metadataCache: MetadataCache,
+    private readonly pathsService: AppPathsService,
   ) {}
 
   validateUrls(input: string): DownloadUrlValidation[] {
@@ -84,7 +87,8 @@ export class YtDlpMetadataService {
 
   async getMetadata(url: string, settings: AppSettings): Promise<DownloadMetadata> {
     const normalizedUrl = this.normalizeAbsoluteUrl(url);
-    const cached = this.metadataCache.get(normalizedUrl);
+    const cacheKey = `${normalizedUrl}::${getYtDlpCookieCacheFingerprint(settings)}`;
+    const cached = this.metadataCache.get(cacheKey);
     if (cached) {
       return cached;
     }
@@ -97,9 +101,13 @@ export class YtDlpMetadataService {
       );
     }
 
+    const cookieArgs = buildYtDlpCookieArgs(settings, this.pathsService);
     const result = await this.processRunner.run({
       command: ytDlpBinary.resolvedPath,
       args: [
+        '--ignore-config',
+        '--js-runtimes', 'node',
+        ...cookieArgs,
         '--dump-single-json',
         '--no-playlist',
         '--no-warnings',
@@ -126,8 +134,42 @@ export class YtDlpMetadataService {
     }
 
     const metadata = this.normalizeMetadata(payload, normalizedUrl);
-    this.metadataCache.set(normalizedUrl, metadata);
+    this.metadataCache.set(cacheKey, metadata);
     return metadata;
+  }
+
+  /**
+   * Quick validation that the cookie source resolves to usable yt-dlp args.
+   * Does NOT perform a network probe -- just checks that the file exists / text is present.
+   */
+  async testCookies(settings: AppSettings): Promise<{ ok: boolean; message: string }> {
+    if (settings.ytDlpCookieMode === 'none') {
+      return {
+        ok: false,
+        message: 'Cookie mode is off. Set it to Browser, Cookies file, or Paste text, then try again.',
+      };
+    }
+
+    const cookieArgs = buildYtDlpCookieArgs(settings, this.pathsService);
+    if (cookieArgs.length === 0) {
+      if (settings.ytDlpCookieMode === 'file') {
+        const p = settings.ytDlpCookiesFilePath.trim();
+        return { ok: false, message: p ? `Cookie file not found: ${p}` : 'Choose a cookies.txt file path.' };
+      }
+      if (settings.ytDlpCookieMode === 'paste') {
+        return { ok: false, message: 'Paste Netscape-format cookie text before validating.' };
+      }
+      return { ok: false, message: 'Cookie source could not be prepared.' };
+    }
+
+    const description = settings.ytDlpCookieMode === 'browser'
+      ? `Browser: ${settings.preferredBrowser}${settings.ytDlpBrowserProfile.trim() ? `:${settings.ytDlpBrowserProfile.trim()}` : ''}`
+      : `Cookie file: ${cookieArgs[cookieArgs.indexOf('--cookies') + 1]}`;
+
+    return {
+      ok: true,
+      message: `${description}\n\nYoinkr will pass this directly to yt-dlp for inspect and download.`,
+    };
   }
 
   private normalizeAbsoluteUrl(input: string): string {

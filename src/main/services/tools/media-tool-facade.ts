@@ -23,6 +23,10 @@ export class MediaToolFacade {
     return this.ytDlpService.getMetadata(url, this.settingsService.getSettings());
   }
 
+  async testYtDlpCookiesWithSettings(settings: AppSettings): Promise<{ ok: boolean; message: string }> {
+    return this.ytDlpService.testCookies(settings);
+  }
+
   async getBinaryStatuses(settings?: AppSettings): Promise<BinaryStatus[]> {
     const effectiveSettings = settings ?? this.settingsService.getSettings();
     const statuses = await this.toolStatusService.getBinaryStatuses(effectiveSettings);

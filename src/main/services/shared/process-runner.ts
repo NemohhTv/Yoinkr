@@ -35,8 +35,12 @@ export class ProcessRunner {
       let stderr = '';
       let settled = false;
 
+      let timeoutHandle: NodeJS.Timeout | null = null;
+
       const cleanup = (): void => {
-        clearTimeout(timeoutHandle);
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
       };
 
       const fail = (error: Error): void => {
@@ -49,10 +53,12 @@ export class ProcessRunner {
         reject(error);
       };
 
-      const timeoutHandle = setTimeout(() => {
-        child.kill();
-        fail(new ServiceError('PROCESS_TIMEOUT', `Timed out after ${timeoutMs}ms while running ${command}.`));
-      }, timeoutMs);
+      if (timeoutMs > 0) {
+        timeoutHandle = setTimeout(() => {
+          child.kill();
+          fail(new ServiceError('PROCESS_TIMEOUT', `Timed out after ${timeoutMs}ms while running ${command}.`));
+        }, timeoutMs);
+      }
 
       child.stdout.on('data', (chunk: Buffer | string) => {
         stdout += chunk.toString();

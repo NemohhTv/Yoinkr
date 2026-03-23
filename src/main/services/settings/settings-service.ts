@@ -36,6 +36,12 @@ export class SettingsService {
     return this.getSettings();
   }
 
+  /** Merge a patch onto current saved settings (validated). Used for cookie test with unsaved UI draft. */
+  previewWith(patch: SettingsPatch): AppSettings {
+    const current = this.getSettings();
+    return this.validator.mergeAndValidate(current, patch);
+  }
+
   private getPathDefaults(): Pick<AppSettings, 'downloadDirectory' | 'exportDirectory' | 'tempDirectory'> {
     const paths = this.pathsService.getPaths();
 

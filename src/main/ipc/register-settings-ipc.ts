@@ -27,5 +27,25 @@ export const registerSettingsIpc = (context: AppContext): void => {
     return ok(result.canceled ? null : result.filePaths[0] ?? null);
   });
 
+  ipcMain.handle(ipcChannels.settingsPickCookiesFile, async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose Netscape cookies.txt file',
+      properties: ['openFile'],
+      filters: [{ name: 'Cookies / text', extensions: ['txt'] }, { name: 'All files', extensions: ['*'] }],
+    });
+    return ok(result.canceled ? null : result.filePaths[0] ?? null);
+  });
+
+  ipcMain.handle(ipcChannels.settingsTestYtDlpCookies, async (_event, patch?: SettingsPatch) => {
+    try {
+      const merged = context.settingsService.previewWith(patch ?? {});
+      const outcome = await context.mediaToolFacade.testYtDlpCookiesWithSettings(merged);
+      return ok(outcome);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Cookie test failed.';
+      return fail('COOKIE_TEST_FAILED', message);
+    }
+  });
+
   ipcMain.handle(ipcChannels.settingsReset, async () => ok(context.settingsService.reset()));
 };

@@ -1,5 +1,5 @@
 import type { BinaryStatus, DownloadableToolName } from '@shared/types/common';
-import type { AppSettings } from '@shared/types/settings';
+import type { AppSettings, YtDlpCookieMode } from '@shared/types/settings';
 import type { ToolDownloadState } from './use-settings-controller';
 
 interface SettingsController {
@@ -20,6 +20,9 @@ interface SettingsController {
     field: 'downloadDirectory' | 'exportDirectory' | 'tempDirectory',
     title: string,
   ) => Promise<void>;
+  pickCookiesFile: () => Promise<void>;
+  testYtDlpCookies: () => Promise<void>;
+  cookieTestResult: { ok: boolean; message: string } | null;
   chooseBinaryPath: (toolName: BinaryStatus['toolName']) => Promise<void>;
   downloadTool: (tool: DownloadableToolName) => Promise<void>;
   save: () => Promise<void>;
@@ -229,24 +232,95 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
           </label>
         </div>
 
-        <div className="grid-two">
+        <div className="stack gap-sm">
+          <h3 style={{ margin: 0, fontSize: '1rem' }}>YouTube &amp; restricted sites (cookies)</h3>
+          <p className="muted" style={{ fontSize: '0.85rem', margin: 0 }}>
+            Age-restricted and members-only videos need a logged-in session. Yoinkr passes cookies directly to yt-dlp.
+            <strong> Browser mode</strong> reads the cookie database from disk — fully quit the browser first.
+            On Windows only Firefox works reliably; Chrome/Edge encrypt cookies with DPAPI which yt-dlp cannot decrypt.
+            <strong> Cookies file</strong> is the most reliable method — use a browser extension like &quot;Get cookies.txt LOCALLY&quot; to export, then point Yoinkr to that file.
+          </p>
           <label className="field">
-            <span>Preferred browser</span>
-            <select value={draft.preferredBrowser} onChange={(event) => controller.updateField('preferredBrowser', event.target.value as AppSettings['preferredBrowser'])}>
-              <option value="edge">Microsoft Edge</option>
-              <option value="chrome">Google Chrome</option>
-              <option value="firefox">Mozilla Firefox</option>
+            <span>Cookie source</span>
+            <select
+              value={draft.ytDlpCookieMode}
+              onChange={(event) => controller.updateField('ytDlpCookieMode', event.target.value as YtDlpCookieMode)}
+            >
+              <option value="none">Off (public videos only)</option>
+              <option value="browser">Browser (Firefox only on Windows)</option>
+              <option value="file">Cookies.txt file (recommended)</option>
+              <option value="paste">Paste cookies.txt text</option>
             </select>
           </label>
-          <label className="field">
-            <span>Overwrite behavior</span>
-            <select value={draft.overwriteBehavior} onChange={(event) => controller.updateField('overwriteBehavior', event.target.value as AppSettings['overwriteBehavior'])}>
-              <option value="save-as-new">Save as new file</option>
-              <option value="replace-existing">Replace existing target</option>
-              <option value="confirm-replace-original">Confirm before replacing original</option>
-            </select>
-          </label>
+          {draft.ytDlpCookieMode === 'browser' && (
+            <>
+              <label className="field">
+                <span>Browser to read cookies from</span>
+                <select value={draft.preferredBrowser} onChange={(event) => controller.updateField('preferredBrowser', event.target.value as AppSettings['preferredBrowser'])}>
+                  <option value="firefox">Mozilla Firefox</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Browser profile (optional)</span>
+                <input
+                  value={draft.ytDlpBrowserProfile}
+                  onChange={(e) => controller.updateField('ytDlpBrowserProfile', e.target.value)}
+                  placeholder="e.g. xxxxx.default-release (see about:profiles in Firefox)"
+                  spellCheck={false}
+                />
+              </label>
+              <p className="muted" style={{ fontSize: '0.8rem', margin: 0 }}>
+                Leave blank to let yt-dlp choose. Firefox: go to <code>about:profiles</code> and use the root folder name.
+                On Windows only Firefox browser mode works; for Chrome/Edge use the <strong>Cookies file</strong> option instead.
+              </p>
+            </>
+          )}
+          {draft.ytDlpCookieMode === 'file' && (
+            <div className="field-group">
+              <label className="field">
+                <span>cookies.txt path</span>
+                <input value={draft.ytDlpCookiesFilePath} readOnly placeholder="Browse to your exported cookies.txt" />
+              </label>
+              <button type="button" className="button secondary" onClick={() => void controller.pickCookiesFile()}>Browse…</button>
+            </div>
+          )}
+          {draft.ytDlpCookieMode === 'paste' && (
+            <label className="field">
+              <span>Netscape cookies.txt content (paste full file)</span>
+              <textarea
+                className="settings-cookie-paste"
+                rows={10}
+                spellCheck={false}
+                autoComplete="off"
+                placeholder={'# Netscape HTTP Cookie File\n# (paste entire export from Get cookies.txt or similar)'}
+                value={draft.ytDlpCookiesPastedText}
+                onChange={(e) => controller.updateField('ytDlpCookiesPastedText', e.target.value)}
+              />
+            </label>
+          )}
+          <div className="button-row" style={{ marginTop: 4 }}>
+            <button type="button" className="button secondary" onClick={() => void controller.testYtDlpCookies()}>
+              Validate cookie source
+            </button>
+          </div>
+          <p className="muted" style={{ fontSize: '0.8rem', margin: 0 }}>
+            Saves auth settings immediately and checks that the cookie source exists. The file is passed directly to yt-dlp without any modification.
+          </p>
+          {controller.cookieTestResult && (
+            <div className={controller.cookieTestResult.ok ? 'notice info' : 'notice danger'} style={{ fontSize: '0.88rem', whiteSpace: 'pre-wrap' }}>
+              {controller.cookieTestResult.message}
+            </div>
+          )}
         </div>
+
+        <label className="field">
+          <span>Overwrite behavior</span>
+          <select value={draft.overwriteBehavior} onChange={(event) => controller.updateField('overwriteBehavior', event.target.value as AppSettings['overwriteBehavior'])}>
+            <option value="save-as-new">Save as new file</option>
+            <option value="replace-existing">Replace existing target</option>
+            <option value="confirm-replace-original">Confirm before replacing original</option>
+          </select>
+        </label>
 
         <div className="notice warning">
           Replacing an existing file can overwrite source media. Keep backups enabled if you want a safer default before replace workflows go live.

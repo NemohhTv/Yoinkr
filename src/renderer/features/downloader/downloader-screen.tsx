@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import type { DownloadDraft } from '@shared/types/downloader';
+import type { AudioPreference, DownloadDraft } from '@shared/types/downloader';
+import type { EditorOpenRequest } from '@shared/types/editor';
 
 import type { useDownloaderController } from './use-downloader-controller';
 
@@ -12,18 +12,14 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
     form,
     validation,
     activeValidation,
-    metadata,
-    activeMetadataFormats,
-    availableFileTypes,
+    derivedResolutions,
     queueItems,
     queueSummary,
-    historyItems,
     isLoadingMetadata,
     error,
     activityMessage,
   } = controller;
 
-  const [historyOpen, setHistoryOpen] = useState(true);
   const navigate = useNavigate();
 
   return (
@@ -34,16 +30,17 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
           className="dl-url-input"
           value={form.urlInput}
           onChange={(e) => controller.updateField('urlInput', e.target.value)}
-          placeholder="https://youtu.be/BO8lX3hDU30"
+          placeholder="Insert a URL to download..."
           onKeyDown={(e) => {
-            if (e.key === 'Enter') void controller.inspectUrl();
+            if (e.key === 'Enter') void controller.enqueueDraft();
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            void controller.pasteFromClipboard();
           }}
         />
-        <button className="dl-btn dl-btn-secondary" onClick={() => void controller.inspectUrl()}>
-          {isLoadingMetadata ? 'Inspecting...' : 'Inspect'}
-        </button>
-        <button className="dl-btn dl-btn-primary" onClick={() => void controller.enqueueDraft()}>
-          Add
+        <button className="dl-btn dl-btn-primary" onClick={() => void controller.enqueueDraft()} disabled={isLoadingMetadata}>
+          {isLoadingMetadata ? 'Loading...' : 'Add'}
         </button>
         <button
           className="dl-btn dl-btn-icon"
@@ -75,318 +72,151 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
         </div>
       )}
 
-      <section className="dl-preview-panel">
-        {isLoadingMetadata ? (
-          <div className="dl-preview-empty">
-            <strong>Inspecting media...</strong>
-            <span>Yoinkr is reading live metadata and format details from `yt-dlp`.</span>
-          </div>
-        ) : metadata ? (
-          <div className="dl-preview-grid">
-            <img className="dl-preview-thumb" src={metadata.thumbnailUrl || 'https://placehold.co/320x180/111827/FFFFFF?text=Preview'} alt={metadata.title} />
-            <div className="dl-preview-meta">
-              <div className="dl-preview-head">
-                <div>
-                  <h3>{metadata.title}</h3>
-                  <p className="dl-preview-subhead">
-                    {metadata.extractor} · {metadata.channel || metadata.uploader} · {metadata.durationText || 'Unknown duration'}
-                  </p>
-                </div>
-                <button
-                  className="dl-history-action dl-history-action-link"
-                  onClick={() => window.open(metadata.webpageUrl)}
-                  title="Open source URL"
-                >
-                  ↗
-                </button>
-              </div>
-
-              <div className="dl-preview-details">
-                <span>Uploader: {metadata.uploader}</span>
-                <span>Upload date: {metadata.uploadDate || 'Unknown'}</span>
-                <span>Formats: {metadata.availableFormats.length}</span>
-                <span>Subtitles: {metadata.subtitles.length}</span>
-              </div>
-
-              {metadata.siteWarning ? <div className="dl-preview-warning">{metadata.siteWarning}</div> : null}
-
-              <div className="dl-preview-formats">
-                {activeMetadataFormats.slice(0, 8).map((format) => (
-                  <button
-                    key={format.id}
-                    className="dl-format-pill"
-                    onClick={() => controller.applyFormatSuggestion(format)}
-                    title={`${format.label} · ${format.estimatedSizeText} · ${format.videoCodec ?? 'no video'} / ${format.audioCodec ?? 'no audio'}`}
-                  >
-                    <strong>{format.label}</strong>
-                    <span>{format.ext?.toUpperCase() ?? 'Unknown'} · {format.estimatedSizeText}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="dl-preview-empty">
-            <strong>{activeValidation ? 'Ready to inspect' : 'Paste a URL to inspect'}</strong>
-            <span>
-              {activeValidation
-                ? 'Inspect the active validated item to load live site, title, duration, and format data.'
-                : 'Yoinkr will validate one or many URLs, then let you inspect one active item at a time.'}
-            </span>
-          </div>
-        )}
-      </section>
-
-      {/* ─── Card Grid ─── */}
-      <div className="dl-card-grid">
+      {/* ─── Unified Item List ─── */}
+      <div className="dl-item-list">
         {queueItems.length === 0 ? (
-          <div className="dl-empty-grid">
-            <div className="dl-empty-icon">⬇</div>
-            <p>Paste a URL above and click <strong>Add</strong> to start building your queue.</p>
+          <div className="dl-item-empty">
+            {isLoadingMetadata
+              ? 'Fetching metadata...'
+              : <>Enter a URL above and click <strong>Add</strong> to start downloading.</>
+            }
           </div>
         ) : (
           queueItems.map((item) => {
+            const isActive = item.status === 'downloading' || item.status === 'merging' || item.status === 'converting';
             const fileTypes =
               item.mediaType === 'audio-only'
                 ? (['mp3', 'm4a', 'wav', 'flac'] as const)
                 : (['mp4', 'mkv', 'webm', 'original'] as const);
 
             return (
-              <article key={item.id} className="dl-card">
-                <div className="dl-card-thumb-wrap">
-                  <img className="dl-card-thumb" src={item.thumbnailUrl} alt={item.title} />
-                </div>
+              <div key={item.id} className={`dl-item-row ${item.status === 'complete' ? 'dl-item-row-complete' : ''} ${item.status === 'error' ? 'dl-item-row-error' : ''}`}>
+                <img className="dl-item-thumb" src={item.thumbnailUrl} alt={item.title} />
 
-                <div className="dl-card-info">
-                  <h3 className="dl-card-title">{item.title}</h3>
+                <div className="dl-item-body">
+                  <div className="dl-item-head">
+                    <h3>{item.title}</h3>
+                    <span className="dl-item-subhead">{item.extractor} · {item.durationText}</span>
+                  </div>
 
-                  <div className="dl-card-selects">
-                    <select
-                      className="dl-select"
-                      value={item.mediaType}
-                      onChange={(e) =>
-                        controller.updateQueueItem(item.id, {
-                          mediaType: e.target.value as typeof item.mediaType,
-                        })
-                      }
-                    >
+                  <div className="dl-item-controls">
+                    <select className="dl-select" value={item.mediaType} disabled={isActive || item.status === 'complete'} onChange={(e) => controller.updateQueueItem(item.id, { mediaType: e.target.value as typeof item.mediaType })}>
                       <option value="video-audio">Video + Audio</option>
                       <option value="video-only">Video</option>
                       <option value="audio-only">Audio</option>
                     </select>
-
-                    <select
-                      className="dl-select"
-                      value={item.qualityTarget}
-                      onChange={(e) =>
-                        controller.updateQueueItem(item.id, {
-                          qualityTarget: e.target.value as DownloadDraft['qualityTarget'],
-                        })
-                      }
-                      disabled={item.mediaType === 'audio-only'}
-                    >
+                    <select className="dl-select" value={item.qualityTarget} disabled={isActive || item.status === 'complete' || item.mediaType === 'audio-only'} onChange={(e) => controller.updateQueueItem(item.id, { qualityTarget: e.target.value as DownloadDraft['qualityTarget'] })}>
                       <option value="best">Best</option>
-                      <option value="2160p">2160p</option>
-                      <option value="1440p">1440p</option>
-                      <option value="1080p">1080p</option>
-                      <option value="720p">720p</option>
-                      <option value="480p">480p</option>
-                    </select>
-                  </div>
-
-                  <div className="dl-card-selects">
-                    <select
-                      className="dl-select"
-                      value={item.fileType}
-                      onChange={(e) =>
-                        controller.updateQueueItem(item.id, {
-                          fileType: e.target.value as typeof item.fileType,
-                        })
-                      }
-                    >
-                      {fileTypes.map((ft) => (
-                        <option key={ft} value={ft}>
-                          {ft.toUpperCase()}
-                        </option>
+                      {derivedResolutions.map((r) => (
+                        <option key={r.label} value={r.qualityTarget}>{r.label}</option>
                       ))}
                     </select>
+                    <select className="dl-select" value={item.fileType} disabled={isActive || item.status === 'complete'} onChange={(e) => controller.updateQueueItem(item.id, { fileType: e.target.value as typeof item.fileType })}>
+                      {fileTypes.map((ft) => (<option key={ft} value={ft}>{ft.toUpperCase()}</option>))}
+                    </select>
+                    {item.mediaType !== 'audio-only' && (
+                      <select className="dl-select" value={item.audioPreference} disabled={isActive || item.status === 'complete'} onChange={(e) => controller.updateQueueItem(item.id, { audioPreference: e.target.value as AudioPreference })}>
+                        <option value="best">Audio: Best</option>
+                        <option value="aac">AAC</option>
+                        <option value="opus">Opus</option>
+                      </select>
+                    )}
+                    <span className="dl-item-size">{item.sizeText}</span>
                   </div>
 
-                  <div className="dl-card-meta">
-                    <span>Duration: {item.durationText}</span>
-                    <span>Size: {item.sizeText}</span>
-                  </div>
+                  {isActive && (
+                    <div className="dl-item-progress">
+                      <div className="dl-item-progress-track">
+                        <div className="dl-item-progress-fill" style={{ width: `${Math.max(2, item.progressPercent)}%` }} />
+                      </div>
+                      <span className="dl-item-progress-label">{item.progressMessage}</span>
+                    </div>
+                  )}
+
+                  {item.status === 'complete' && <span className="dl-item-complete-label">Download complete</span>}
+                  {item.status === 'error' && <span className="dl-item-error-label">{item.progressMessage || 'Download failed'}</span>}
                 </div>
 
-                <div className="dl-card-actions">
+                <div className="dl-item-actions">
+                  {isActive ? (
+                    <button className="dl-item-action-btn dl-item-action-cancel" onClick={() => void controller.cancelItem(item.id)} title="Cancel download">■</button>
+                  ) : (
+                    <button
+                      className={`dl-item-action-btn ${item.status === 'staged' || item.status === 'error' ? 'dl-item-action-download' : ''}`}
+                      onClick={() => void controller.downloadItem(item.id)}
+                      title="Download"
+                      disabled={item.status === 'complete'}
+                    >
+                      {item.status === 'complete' ? '✓' : '↓'}
+                    </button>
+                  )}
+                  {item.status === 'complete' && item.outputPath && (
+                    <button className="dl-item-action-btn" onClick={() => void controller.revealFile(item.outputPath!)} title="Open file location">📂</button>
+                  )}
+                  {item.status === 'complete' && (
+                    <button
+                      className="dl-item-action-btn"
+                      onClick={() => {
+                        if (!item.outputPath) {
+                          return;
+                        }
+                        const request: EditorOpenRequest = {
+                          sourcePath: item.outputPath,
+                          sourceKind: 'download',
+                          downloadId: item.id,
+                          titleHint: item.title,
+                          sourceUrl: item.sourceUrl,
+                          autoLoad: true,
+                        };
+                        navigate('/editor', { state: request });
+                      }}
+                      title="Open in editor"
+                      disabled={!item.outputPath}
+                    >
+                      ✎
+                    </button>
+                  )}
                   <button
-                    className="dl-card-action-btn"
-                    onClick={() => controller.removeQueueItem(item.id)}
-                    title="Remove"
-                  >
-                    ✕
-                  </button>
-                  <button
-                    className="dl-card-action-btn"
-                    onClick={() => {
-                      if (item.sourceUrl) window.open(item.sourceUrl);
+                    className="dl-item-action-btn"
+                    onClick={() => { if (item.sourceUrl) window.open(item.sourceUrl); }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      if (item.sourceUrl) {
+                        navigator.clipboard.writeText(item.sourceUrl);
+                        controller.triggerPlaceholderAction('Link copied to clipboard.');
+                      }
                     }}
-                    title="Open source URL"
-                  >
-                    ↗
-                  </button>
-                  <button
-                    className="dl-card-action-btn"
-                    onClick={() =>
-                      controller.triggerPlaceholderAction('Individual download will connect when the queue engine is live.')
-                    }
-                    title="Download"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    className="dl-card-action-btn"
-                    onClick={() => void controller.inspectUrl(item.sourceUrl)}
-                    title="Info"
-                  >
-                    ⓘ
-                  </button>
+                    title="Click to open · Right-click to copy URL"
+                  >↗</button>
+                  <button className="dl-item-action-btn" onClick={() => controller.removeQueueItem(item.id)} title="Remove" disabled={isActive}>✕</button>
                 </div>
-              </article>
+              </div>
             );
           })
         )}
       </div>
 
-      {/* ─── History / Library ─── */}
-      <div className="dl-history-section">
-        <button className="dl-history-toggle" onClick={() => setHistoryOpen((v) => !v)}>
-          <span className="dl-history-toggle-icon">{historyOpen ? '▾' : '▸'}</span>
-          <span>History &amp; Library</span>
-          <span className="dl-history-count">{historyItems.length}</span>
-        </button>
-
-        {historyOpen && (
-          <div className="dl-history-list">
-            {historyItems.map((item) => (
-              <div key={item.id} className="dl-history-row">
-                <img className="dl-history-thumb" src={item.thumbnailUrl} alt={item.title} />
-                <div className="dl-history-info">
-                  <strong>{item.title}</strong>
-                  <span className="dl-history-meta">
-                    {item.state} · {item.format} · {item.resolution} · {item.durationText} · {item.sizeText}
-                  </span>
-                </div>
-                <span className="dl-history-date">{item.updatedAt}</span>
-                <div className="dl-history-actions">
-                  {item.sourceUrl && (
-                    <button
-                      className="dl-history-action dl-history-action-link"
-                      onClick={() => window.open(item.sourceUrl)}
-                      title="Open source URL in browser"
-                    >
-                      ↗
-                    </button>
-                  )}
-                  <button
-                    className="dl-history-action"
-                    onClick={() => controller.triggerPlaceholderAction('Open file will hook into native file actions once media outputs are real.')}
-                  >
-                    Open
-                  </button>
-                  <button
-                    className="dl-history-action"
-                    onClick={() => controller.triggerPlaceholderAction('Reveal in folder will connect when saved media paths are loaded.')}
-                  >
-                    Folder
-                  </button>
-                  <button
-                    className="dl-history-action"
-                    onClick={() => controller.triggerPlaceholderAction('Open in editor will route selected media into the editor workspace.')}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    className="dl-history-action"
-                    onClick={() => controller.triggerPlaceholderAction('Retry will replay this item through the queue once download execution exists.')}
-                  >
-                    Retry
-                  </button>
-                </div>
-              </div>
-            ))}
+      {/* ─── Bottom Bar ─── */}
+      {queueItems.length > 0 && (
+        <div className="dl-bottom-bar">
+          <div className="dl-bottom-status">
+            {queueSummary.complete > 0 && <span>{queueSummary.complete} done</span>}
+            {queueSummary.active > 0 && <span>{queueSummary.active} downloading</span>}
+            {queueSummary.pending > 0 && <span>{queueSummary.pending} pending</span>}
+            {queueSummary.pending === 0 && queueSummary.active === 0 && queueSummary.complete > 0 && (
+              <span>All downloads complete</span>
+            )}
           </div>
-        )}
-      </div>
-
-      {/* ─── Bottom Action Bar ─── */}
-      <div className="dl-bottom-bar">
-        <div className="dl-bottom-status">
-          Ready to download! {queueSummary.total} item{queueSummary.total !== 1 ? 's' : ''} queued.
+          <div className="dl-bottom-actions">
+            <button className="dl-btn dl-btn-secondary" onClick={() => controller.triggerPlaceholderAction('Queue cleared.')} title="Clear queue">Clear</button>
+            {queueSummary.pending > 0 && (
+              <button className="dl-btn dl-btn-download" onClick={() => { queueItems.filter((i) => i.status === 'staged' || i.status === 'error').forEach((i) => void controller.downloadItem(i.id)); }}>
+                Download{queueSummary.pending > 1 ? ` All (${queueSummary.pending})` : ''}
+              </button>
+            )}
+          </div>
         </div>
-
-        <div className="dl-bottom-controls">
-          <select
-            className="dl-select"
-            value={form.mediaType}
-            onChange={(e) => controller.updateField('mediaType', e.target.value as typeof form.mediaType)}
-          >
-            <option value="video-audio">Video + Audio</option>
-            <option value="video-only">Video</option>
-            <option value="audio-only">Audio</option>
-          </select>
-
-          <select
-            className="dl-select"
-            value={form.fileType}
-            onChange={(e) => controller.updateField('fileType', e.target.value as typeof form.fileType)}
-          >
-            {availableFileTypes.map((ft) => (
-              <option key={ft} value={ft}>
-                {ft.toUpperCase()}
-              </option>
-            ))}
-          </select>
-
-          <label className="dl-check">
-            <input
-              type="checkbox"
-              checked={form.remuxIfPossible}
-              onChange={(e) => controller.updateField('remuxIfPossible', e.target.checked)}
-            />
-            Remux
-          </label>
-
-          <label className="dl-check">
-            <input
-              type="checkbox"
-              checked={form.allowReencodeFallback}
-              onChange={(e) => controller.updateField('allowReencodeFallback', e.target.checked)}
-            />
-            Re-encode fallback
-          </label>
-        </div>
-
-        <div className="dl-bottom-actions">
-          <button
-            className="dl-btn dl-btn-icon"
-            title="Clear queue"
-            onClick={() =>
-              controller.triggerPlaceholderAction('Bulk queue controls will connect when real download execution is added.')
-            }
-          >
-            🗑
-          </button>
-          <button
-            className="dl-btn dl-btn-download"
-            onClick={() =>
-              controller.triggerPlaceholderAction('Download all will execute queued items in Phase 2.')
-            }
-          >
-            Download
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

@@ -1,5 +1,6 @@
 import type { BinaryStatus, DownloadableToolName, ToolDownloadProgress, ToolDownloadResult } from '@shared/types/common';
-import type { DownloadDraft, DownloadMetadata, DownloadUrlValidation } from '@shared/types/downloader';
+import type { DownloadDraft, DownloadMetadata, DownloadUrlValidation, DownloadHistoryRecord, ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
+import type { EditorExportPreview, EditorExportRequest, EditorExportResult, EditorOpenRequest, EditorOpenResult, EditorTimelineAssets } from '@shared/types/editor';
 import type { AppSettings, SettingsPatch } from '@shared/types/settings';
 import type { BootstrapState, DiagnosticsInfo } from '@shared/types/app';
 
@@ -10,6 +11,7 @@ const appClient = {
     unwrapResult(await window.yoinkrApi.app.getBootstrapState()),
   revealPath: async (targetPath: string): Promise<boolean> =>
     unwrapResult(await window.yoinkrApi.app.revealPath(targetPath)),
+  resolveFilePath: (file: File): string | null => window.yoinkrApi.app.resolveFilePath(file),
 };
 
 const settingsClient = {
@@ -18,6 +20,10 @@ const settingsClient = {
     unwrapResult(await window.yoinkrApi.settings.update(patch)),
   pickDirectory: async (title: string): Promise<string | null> =>
     unwrapResult(await window.yoinkrApi.settings.pickDirectory(title)),
+  pickCookiesFile: async (): Promise<string | null> =>
+    unwrapResult(await window.yoinkrApi.settings.pickCookiesFile()),
+  testYtDlpCookies: async (patch?: SettingsPatch): Promise<{ ok: boolean; message: string }> =>
+    unwrapResult(await window.yoinkrApi.settings.testYtDlpCookies(patch)),
   reset: async (): Promise<AppSettings> => unwrapResult(await window.yoinkrApi.settings.reset()),
 };
 
@@ -29,6 +35,35 @@ const downloaderClient = {
   enqueueDraft: async (
     draft: Omit<DownloadDraft, 'id' | 'createdAt' | 'status'>,
   ): Promise<DownloadDraft> => unwrapResult(await window.yoinkrApi.downloader.enqueueDraft(draft)),
+  startItem: async (request: ItemDownloadRequest): Promise<ItemDownloadResult> =>
+    unwrapResult(await window.yoinkrApi.downloader.startItem(request)),
+  cancelItem: async (id: string): Promise<boolean> =>
+    unwrapResult(await window.yoinkrApi.downloader.cancelItem(id)),
+  onItemProgress: (callback: (progress: ItemDownloadProgress) => void): (() => void) =>
+    window.yoinkrApi.downloader.onItemProgress(callback),
+  saveHistory: async (record: DownloadHistoryRecord): Promise<DownloadHistoryRecord> =>
+    unwrapResult(await window.yoinkrApi.downloader.saveHistory(record)),
+  deleteHistory: async (id: string): Promise<boolean> =>
+    unwrapResult(await window.yoinkrApi.downloader.deleteHistory(id)),
+  getHistory: async (): Promise<DownloadHistoryRecord[]> =>
+    unwrapResult(await window.yoinkrApi.downloader.getHistory()),
+};
+
+const editorClient = {
+  openSource: async (request: EditorOpenRequest): Promise<EditorOpenResult> =>
+    unwrapResult(await window.yoinkrApi.editor.openSource(request)),
+  getTimelineAssets: async (sourcePath: string): Promise<EditorTimelineAssets> =>
+    unwrapResult(await window.yoinkrApi.editor.getTimelineAssets(sourcePath)),
+  previewExport: async (request: EditorExportRequest): Promise<EditorExportPreview> =>
+    unwrapResult(await window.yoinkrApi.editor.previewExport(request)),
+  pickSourceFile: async (): Promise<string | null> =>
+    unwrapResult(await window.yoinkrApi.editor.pickSourceFile()),
+  pickExportDirectory: async (): Promise<string | null> =>
+    unwrapResult(await window.yoinkrApi.editor.pickExportDirectory()),
+  pickExportFile: async (suggestedName: string): Promise<string | null> =>
+    unwrapResult(await window.yoinkrApi.editor.pickExportFile(suggestedName)),
+  exportMedia: async (request: EditorExportRequest): Promise<EditorExportResult> =>
+    unwrapResult(await window.yoinkrApi.editor.exportMedia(request)),
 };
 
 const toolsClient = {
@@ -51,6 +86,7 @@ export const yoinkrClient = {
   app: appClient,
   settings: settingsClient,
   downloader: downloaderClient,
+  editor: editorClient,
   tools: toolsClient,
   diagnostics: diagnosticsClient,
 };

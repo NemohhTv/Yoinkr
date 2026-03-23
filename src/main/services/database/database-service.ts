@@ -52,6 +52,21 @@ export class DatabaseService {
         key TEXT PRIMARY KEY,
         accepted_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS download_history (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        thumbnail_url TEXT NOT NULL DEFAULT '',
+        extractor TEXT NOT NULL DEFAULT '',
+        duration_text TEXT NOT NULL DEFAULT '',
+        size_text TEXT NOT NULL DEFAULT '',
+        media_type TEXT NOT NULL DEFAULT 'video-audio',
+        file_type TEXT NOT NULL DEFAULT 'mp4',
+        quality_target TEXT NOT NULL DEFAULT 'best',
+        output_path TEXT,
+        completed_at TEXT NOT NULL
+      );
     `);
   }
 }
