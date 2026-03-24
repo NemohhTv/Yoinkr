@@ -38,7 +38,7 @@ Official builds live on **[GitHub Releases](https://github.com/NemohhTv/Yoinkr/r
 `latest.yml` and `.blockmap` are for the updater; you normally only need the **Setup** exe.
 
 **Example URL** (replace the version with the tag you want):  
-`https://github.com/NemohhTv/Yoinkr/releases/download/v0.2.12/Yoinkr-Setup-0.2.12.exe`
+`https://github.com/NemohhTv/Yoinkr/releases/download/v0.2.13/Yoinkr-Setup-0.2.13.exe`
 
 ---
 
@@ -68,9 +68,9 @@ Pushing a tag **`v*`** that matches `"version"` in `package.json` runs **[`.gith
 
 ```bash
 # bump package.json version, then:
-git add -A && git commit -m "chore: release 0.2.12"
+git add -A && git commit -m "chore: release 0.2.13"
 git push origin main
-git tag v0.2.12 && git push origin v0.2.12
+git tag v0.2.13 && git push origin v0.2.13
 ```
 
 ---

@@ -77,6 +77,10 @@ const resolveQualityTarget = (
     return 'custom';
   }
 
+  if (format.height >= 4320) {
+    return '4320p';
+  }
+
   if (format.height >= 2160) {
     return '2160p';
   }
@@ -140,7 +144,14 @@ const estimateSize = (
   mediaType: DownloadMediaType,
   qualityTarget: DownloadDraft['qualityTarget'],
 ): string | null => {
-  const heightMap: Record<string, number> = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '480p': 480 };
+  const heightMap: Record<string, number> = {
+    '4320p': 4320,
+    '2160p': 2160,
+    '1440p': 1440,
+    '1080p': 1080,
+    '720p': 720,
+    '480p': 480,
+  };
   const targetHeight = qualityTarget === 'best' ? Infinity : (heightMap[qualityTarget] ?? Infinity);
 
   if (mediaType === 'audio-only') {

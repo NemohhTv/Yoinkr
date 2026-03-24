@@ -119,7 +119,7 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
                     <select className="dl-select" value={item.qualityTarget} disabled={isActive || item.status === 'complete' || item.mediaType === 'audio-only'} onChange={(e) => controller.updateQueueItem(item.id, { qualityTarget: e.target.value as DownloadDraft['qualityTarget'] })}>
                       <option value="best">Best</option>
                       {derivedResolutions.map((r) => (
-                        <option key={r.label} value={r.qualityTarget}>{r.label}</option>
+                        <option key={`${r.height}-${r.fps}`} value={r.qualityTarget}>{r.label}</option>
                       ))}
                     </select>
                     <select className="dl-select" value={item.fileType} disabled={isActive || item.status === 'complete'} onChange={(e) => controller.updateQueueItem(item.id, { fileType: e.target.value as typeof item.fileType })}>

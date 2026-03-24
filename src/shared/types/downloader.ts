@@ -68,7 +68,7 @@ export interface DownloadDraft {
   id: string;
   sourceUrl: string;
   normalizedUrl: string;
-  qualityTarget: 'best' | '2160p' | '1440p' | '1080p' | '720p' | '480p' | 'audio-only' | 'custom';
+  qualityTarget: 'best' | '4320p' | '2160p' | '1440p' | '1080p' | '720p' | '480p' | 'audio-only' | 'custom';
   outputFormat: OutputFormat;
   audioOnly: boolean;
   remuxIfPossible: boolean;

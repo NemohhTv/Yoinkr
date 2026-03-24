@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
+import treeKill from 'tree-kill';
 
 import type { AppPathsService } from '@main/services/paths/app-paths-service';
 import { ServiceError } from '@main/services/shared/service-error';
@@ -37,6 +38,8 @@ const FFMPEG_PROGRESS_THROTTLE_MS = 450;
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
+  /** User pressed Stop — used because Windows often reports `signal: null` on killed children. */
+  private readonly userCancelledDownloadIds = new Set<string>();
 
   constructor(
     private readonly pathsService: AppPathsService,
@@ -46,7 +49,17 @@ export class YtDlpDownloadService {
   cancelItem(id: string): boolean {
     const child = this.activeProcesses.get(id);
     if (!child || child.killed) return false;
-    child.kill();
+    this.userCancelledDownloadIds.add(id);
+    const pid = child.pid;
+    if (pid != null) {
+      treeKill(pid, 'SIGKILL', () => {});
+    } else {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
+    }
     this.activeProcesses.delete(id);
     return true;
   }
@@ -206,7 +219,16 @@ export class YtDlpDownloadService {
 
       const timeoutHandle = setTimeout(() => {
         if (!child.killed) {
-          child.kill();
+          const pid = child.pid;
+          if (pid != null) {
+            treeKill(pid, 'SIGKILL', () => {});
+          } else {
+            try {
+              child.kill('SIGKILL');
+            } catch {
+              /* ignore */
+            }
+          }
           rmSync(tempDir, { recursive: true, force: true });
           const hours = DOWNLOAD_TIMEOUT_MS / (60 * 60 * 1000);
           const msg = `Download timed out after ${hours} hours.`;
@@ -231,7 +253,8 @@ export class YtDlpDownloadService {
         stdoutBuffer = '';
         stderrBuffer = '';
 
-        if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+        const userCancelled = this.userCancelledDownloadIds.delete(request.id);
+        if (userCancelled || signal === 'SIGTERM' || signal === 'SIGKILL') {
           rmSync(tempDir, { recursive: true, force: true });
           const msg = 'Download cancelled.';
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
@@ -431,7 +454,14 @@ export class YtDlpDownloadService {
   }
 
   private getHeightFilter(quality: ItemDownloadRequest['qualityTarget']): number | null {
-    const map: Record<string, number> = { '2160p': 2160, '1440p': 1440, '1080p': 1080, '720p': 720, '480p': 480 };
+    const map: Record<string, number> = {
+      '4320p': 4320,
+      '2160p': 2160,
+      '1440p': 1440,
+      '1080p': 1080,
+      '720p': 720,
+      '480p': 480,
+    };
     return map[quality] ?? null;
   }
 
