@@ -6,6 +6,10 @@
   "main": "out/main/index.js",
   "author": "Cursor",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NemohhTv/Yoinkr.git"
+  },
   "type": "module",
   "scripts": {
     "dev": "electron-vite dev",
@@ -13,14 +17,20 @@
     "preview": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
     "build:icon": "node scripts/build-icon.mjs",
-    "dist": "npm run build:icon && npm run build && electron-builder --win nsis",
-    "dist:dir": "npm run build:icon && npm run build && electron-builder --win dir",
-    "dist:portable": "npm run build:icon && npm run build && electron-builder --win portable",
+    "embed-exe-icon": "node scripts/embed-exe-icon.cjs",
+    "exe": "npm run embed-exe-icon",
+    "verify-icon": "node scripts/verify-exe-icon.cjs",
+    "refresh-icon-cache": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/refresh-icon-cache.ps1",
+    "dist": "npm run build:icon && npm run build && electron-builder --win dir && npm run embed-exe-icon && electron-builder --win nsis --prepackaged release/win-unpacked",
+    "dist:dir": "npm run build:icon && npm run build && electron-builder --win dir && npm run embed-exe-icon",
+    "dist:portable": "npm run build:icon && npm run build && electron-builder --win dir && npm run embed-exe-icon && electron-builder --win portable --prepackaged release/win-unpacked",
+    "dist:publish": "npm run build:icon && npm run build && electron-builder --win dir && npm run embed-exe-icon && electron-builder --win nsis portable --prepackaged release/win-unpacked --publish always",
     "lint": "eslint . --ext .ts,.tsx --max-warnings=0"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
     "better-sqlite3": "^12.4.1",
+    "electron-updater": "^6.8.3",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.9.4",
@@ -42,7 +52,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.4.0",
     "png-to-ico": "^3.0.1",
-    "rcedit": "^4.0.1",
+    "resedit": "^1.7.2",
     "sharp": "^0.34.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.0",
@@ -66,6 +76,12 @@
       "**/*.node",
       "**/node_modules/better-sqlite3/**"
     ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "app-icon.ico"
+      }
+    ],
     "afterPack": "scripts/after-pack.cjs",
     "win": {
       "icon": "build/icon.ico",
@@ -78,7 +94,16 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "NemohhTv",
+      "repo": "Yoinkr",
+      "releaseType": "release"
     }
   }
 }

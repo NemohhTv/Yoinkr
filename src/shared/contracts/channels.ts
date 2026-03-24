@@ -30,4 +30,9 @@ export const ipcChannels = {
   toolsDownloadTool: 'tools.downloadTool',
   toolsDownloadProgress: 'tools.downloadProgress',
   diagnosticsGetAppInfo: 'diagnostics.getAppInfo',
+  updatesGetStatus: 'updates.getStatus',
+  updatesCheckNow: 'updates.checkNow',
+  updatesDownload: 'updates.download',
+  updatesInstall: 'updates.install',
+  updatesStatus: 'updates.status',
 } as const;

@@ -39,8 +39,13 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
             void controller.pasteFromClipboard();
           }}
         />
-        <button className="dl-btn dl-btn-primary" onClick={() => void controller.enqueueDraft()} disabled={isLoadingMetadata}>
-          {isLoadingMetadata ? 'Loading...' : 'Add'}
+        <button
+          className="dl-btn dl-btn-primary"
+          type="button"
+          onClick={() => void controller.enqueueDraft()}
+          disabled={isLoadingMetadata}
+        >
+          {isLoadingMetadata ? 'Loading…' : 'Add'}
         </button>
         <button
           className="dl-btn dl-btn-icon"
@@ -79,11 +84,12 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
             {isLoadingMetadata
               ? 'Fetching metadata...'
               : (
-                <>
+                <span className="dl-item-empty-hint">
                   Enter a URL above, then click{' '}
-                  <strong>Add</strong>
-                  {' '}to start downloading.
-                </>
+                  <span className="dl-item-empty-add">Add</span>
+                  {' '}
+                  to start downloading.
+                </span>
               )}
           </div>
         ) : (

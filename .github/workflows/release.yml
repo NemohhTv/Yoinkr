@@ -1,0 +1,62 @@
+# Build Windows installers and publish them to a GitHub Release.
+# Triggers when you push a tag like v0.3.0 (must match package.json "version" = 0.3.0).
+#
+# Your routine (after this repo exists on GitHub):
+#   1. Bump "version" in package.json (e.g. 0.3.0) and commit.
+#   2. git tag v0.3.0 && git push origin main && git push origin v0.3.0
+#   3. Wait for this workflow — it uploads the NSIS installer, portable exe, latest.yml, blockmap.
+# Installed Yoinkr apps will then offer the update (footer bar).
+#
+# You do not need to manually upload release files; the workflow uses GH_TOKEN from Actions.
+# Repository: https://github.com/NemohhTv/Yoinkr
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Align package.json with this GitHub repository
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/align-github-repo.mjs
+
+      - name: Verify tag matches package.json version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          if (-not $ref.StartsWith('v')) {
+            Write-Error "Tag must look like v1.2.3 (got: $ref)"
+            exit 1
+          }
+          $tagVer = $ref.Substring(1)
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($pkg.version -ne $tagVer) {
+            Write-Error "package.json version '$($pkg.version)' must match tag '$ref' (expected $tagVer)"
+            exit 1
+          }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & publish to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run dist:publish

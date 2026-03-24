@@ -84,12 +84,58 @@ button {
   object-fit: contain;
 }
 
-.main-frame {
+.main-column {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  height: 100%;
+  min-width: 0;
+}
+
+.main-frame {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
+}
+
+.app-status-footer {
+  flex-shrink: 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  background: rgba(11, 15, 23, 0.92);
+  padding: 8px 16px;
+}
+
+.update-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.update-status-bar__text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-status-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-status-bar__btn {
+  min-height: 32px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
 }
 
 .button-row,
@@ -1673,6 +1719,10 @@ p {
 .dl-btn-primary {
   background: linear-gradient(135deg, #16a34a, #15803d);
   color: #fff;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 10px 22px;
+  min-width: 5.5rem;
 }
 
 .dl-btn-secondary {
@@ -1802,6 +1852,18 @@ p {
   color: #94a3b8;
   text-align: center;
   padding: 24px;
+}
+
+.dl-item-empty-hint {
+  max-width: 28rem;
+  line-height: 1.55;
+}
+
+.dl-item-empty-add {
+  display: inline;
+  font-weight: 500;
+  color: #e2e8f0;
+  padding: 0 0.2em;
 }
 
 .dl-item-row {
@@ -2143,6 +2205,12 @@ p {
   .app-shell {
     grid-template-columns: 1fr;
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .main-column {
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 0;
   }
 
   .sidebar {

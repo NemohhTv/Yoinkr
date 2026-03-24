@@ -20,8 +20,14 @@ const faviconIco = join(publicDir, 'favicon.ico');
 mkdirSync(buildDir, { recursive: true });
 mkdirSync(publicDir, { recursive: true });
 
+/** `contain` + transparent pad — `cover` crops artwork and can hide transparency at the edges. */
 await sharp(srcPng)
-  .resize(256, 256, { fit: 'cover', position: 'centre' })
+  .ensureAlpha()
+  .resize(256, 256, {
+    fit: 'contain',
+    position: 'centre',
+    background: { r: 0, g: 0, b: 0, alpha: 0 },
+  })
   .png()
   .toFile(tempSquare);
 

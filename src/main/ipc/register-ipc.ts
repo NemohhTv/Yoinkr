@@ -6,6 +6,7 @@ import { registerDownloaderIpc } from './register-downloader-ipc';
 import { registerToolsIpc } from './register-tools-ipc';
 import { registerDiagnosticsIpc } from './register-diagnostics-ipc';
 import { registerEditorIpc } from './register-editor-ipc';
+import { registerUpdatesIpc } from './register-updates-ipc';
 
 export const registerIpc = (context: AppContext): void => {
   registerAppIpc(context);
@@ -14,4 +15,5 @@ export const registerIpc = (context: AppContext): void => {
   registerEditorIpc(context);
   registerToolsIpc(context);
   registerDiagnosticsIpc(context);
+  registerUpdatesIpc();
 };

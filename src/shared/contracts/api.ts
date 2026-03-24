@@ -1,4 +1,5 @@
 import type { DiagnosticsInfo } from '@shared/types/app';
+import type { UpdateStatusPayload } from '@shared/types/update';
 import type { BootstrapState } from '@shared/types/app';
 import type { DownloadDraft, DownloadMetadata, DownloadUrlValidation, ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult, DownloadHistoryRecord } from '@shared/types/downloader';
 import type {
@@ -59,5 +60,12 @@ export interface YoinkrApi {
   };
   diagnostics: {
     getAppInfo(): Promise<Result<DiagnosticsInfo>>;
+  };
+  updates: {
+    getStatus(): Promise<Result<UpdateStatusPayload>>;
+    checkNow(): Promise<Result<boolean>>;
+    download(): Promise<Result<boolean>>;
+    install(): Promise<Result<boolean>>;
+    onStatus(callback: (payload: UpdateStatusPayload) => void): () => void;
   };
 }

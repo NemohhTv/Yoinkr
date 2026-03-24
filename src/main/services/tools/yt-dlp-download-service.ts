@@ -238,9 +238,24 @@ export class YtDlpDownloadService {
 
     });
 
-    return runAttempt(
-      this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings),
-    );
+    const mainArgs = this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings);
+    let result = await runAttempt(mainArgs);
+    if (
+      !result.success &&
+      result.error?.includes('Requested format is not available')
+    ) {
+      result = await runAttempt(
+        this.buildArgs(
+          request,
+          outputTemplate,
+          tempDir,
+          ffmpeg.resolvedPath,
+          settings,
+          this.buildFallbackSelectionArgs(request),
+        ),
+      );
+    }
+    return result;
   }
 
   private buildArgs(
@@ -249,6 +264,7 @@ export class YtDlpDownloadService {
     tempDir: string,
     ffmpegPath: string | null,
     settings: AppSettings,
+    selectionOverride?: string[],
   ): string[] {
     const args: string[] = [
       '--ignore-config',
@@ -269,7 +285,7 @@ export class YtDlpDownloadService {
       args.push('--ffmpeg-location', ffmpegPath);
     }
 
-    args.push(...this.buildSelectionArgs(request));
+    args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
 
     if (request.mediaType === 'audio-only' || request.audioOnly) {
       args.push('-x', '--audio-format', this.mapAudioFormat(request.outputFormat));
@@ -297,8 +313,8 @@ export class YtDlpDownloadService {
     } else if (request.mediaType === 'video-only') {
       selectors.push(
         heightFilter
-          ? `bestvideo*[height<=${heightFilter}]/bestvideo[height<=${heightFilter}]/bestvideo*/bestvideo/best[height<=${heightFilter}]/best`
-          : 'bestvideo*/bestvideo/best',
+          ? `bestvideo[height<=${heightFilter}]/bestvideo*[height<=${heightFilter}]/bestvideo/best[height<=${heightFilter}]/best`
+          : 'bestvideo/bestvideo*/best',
       );
 
       if (heightFilter) {
@@ -306,16 +322,21 @@ export class YtDlpDownloadService {
       }
       sortFields.push(...this.getContainerSortBias(request.outputFormat, false, request.audioPreference));
     } else {
+      /**
+       * Merge video+audio: prefer plain `bestvideo+bestaudio` first (YouTube-friendly), then wildcards.
+       * Do **not** add `-S vext:mp4` / `aext:m4a` here — that still breaks many YouTube merges
+       * ("Requested format is not available") even with Best + MP4 + AAC; `--remux-video mp4` handles
+       * the final container after download.
+       */
       selectors.push(
         heightFilter
-          ? `bestvideo*[height<=${heightFilter}]+bestaudio/bestvideo[height<=${heightFilter}]+bestaudio/best[height<=${heightFilter}]/bestvideo*+bestaudio/best`
-          : 'bestvideo*+bestaudio/bestvideo+bestaudio/best',
+          ? `bestvideo[height<=${heightFilter}]+bestaudio/bestvideo*[height<=${heightFilter}]+bestaudio/best[height<=${heightFilter}]/bestvideo+bestaudio/bestvideo*+bestaudio/best`
+          : 'bestvideo+bestaudio/bestvideo*+bestaudio/bv*+ba/bestvideo+bestaudio/best',
       );
 
       if (heightFilter) {
         sortFields.push(`res:${heightFilter}`);
       }
-      sortFields.push(...this.getContainerSortBias(request.outputFormat, true, request.audioPreference));
     }
 
     const args = ['-f', selectors.join('/')];
@@ -325,6 +346,27 @@ export class YtDlpDownloadService {
     }
 
     return args;
+  }
+
+  /**
+   * Minimal `-f` with no `-S` container bias — used when the primary selection fails with
+   * "Requested format is not available" (e.g. edge cases or extractor quirks).
+   */
+  private buildFallbackSelectionArgs(request: ItemDownloadRequest): string[] {
+    const heightFilter = this.getHeightFilter(request.qualityTarget);
+    if (request.mediaType === 'audio-only' || request.audioOnly) {
+      return ['-f', 'bestaudio/best'];
+    }
+    if (request.mediaType === 'video-only') {
+      const sel = heightFilter
+        ? `bestvideo[height<=${heightFilter}]/bestvideo/best`
+        : 'bestvideo/best';
+      return ['-f', sel];
+    }
+    const sel = heightFilter
+      ? `bestvideo[height<=${heightFilter}]+bestaudio/best+bestvideo+bestaudio/best`
+      : 'bestvideo+bestaudio/best';
+    return ['-f', sel];
   }
 
   private getHeightFilter(quality: ItemDownloadRequest['qualityTarget']): number | null {
@@ -342,22 +384,32 @@ export class YtDlpDownloadService {
     if (outputFormat === 'mp4') {
       sortFields.push('vext:mp4');
       if (includeAudio) {
-        sortFields.push('aext:m4a');
+        if (audioPreference === 'aac') {
+          sortFields.push('aext:m4a');
+        } else if (audioPreference === 'opus') {
+          sortFields.push('acodec:opus', 'aext:webm');
+        }
       }
     } else if (outputFormat === 'webm') {
       sortFields.push('vext:webm');
       if (includeAudio) {
         sortFields.push('aext:webm');
+        if (audioPreference === 'opus') {
+          sortFields.push('acodec:opus');
+        }
       }
-    }
-
-    if (includeAudio) {
+    } else if (outputFormat === 'mkv' && includeAudio) {
+      /** MKV is flexible; still allow nudging audio when user chose an explicit remux target. */
       if (audioPreference === 'aac') {
         sortFields.push('aext:m4a');
       } else if (audioPreference === 'opus') {
         sortFields.push('acodec:opus', 'aext:webm');
       }
     }
+    /**
+     * `original`: do **not** add `aext:m4a` / opus sort — it conflicts with YouTube's usual VP9+Opus
+     * merge and triggers "Requested format is not available" even though cookies are fine.
+     */
 
     return sortFields;
   }
@@ -394,7 +446,10 @@ export class YtDlpDownloadService {
 
   private extractErrorMessage(stderr: string): string {
     const lines = stderr.split(/\r?\n/).filter(Boolean);
-    const errorLine = lines.find((l) => l.toLowerCase().includes('error'));
+    const lower = (l: string) => l.toLowerCase();
+    const errorLine =
+      lines.find((l) => lower(l).includes('error')) ??
+      lines.find((l) => lower(l).includes('requested format'));
     return errorLine?.replace(/^ERROR:\s*/i, '').trim() || 'Download failed. Check yt-dlp output for details.';
   }
 }

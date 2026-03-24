@@ -11,6 +11,7 @@ import type {
 } from '@shared/types/editor';
 import type { AppSettings, SettingsPatch } from '@shared/types/settings';
 import type { BootstrapState, DiagnosticsInfo } from '@shared/types/app';
+import type { UpdateStatusPayload } from '@shared/types/update';
 
 import { unwrapResult } from './result';
 
@@ -94,6 +95,22 @@ const diagnosticsClient = {
     unwrapResult(await window.yoinkrApi.diagnostics.getAppInfo()),
 };
 
+const updatesClient = {
+  getStatus: async (): Promise<UpdateStatusPayload> =>
+    unwrapResult(await window.yoinkrApi.updates.getStatus()),
+  checkNow: async (): Promise<void> => {
+    unwrapResult(await window.yoinkrApi.updates.checkNow());
+  },
+  download: async (): Promise<void> => {
+    unwrapResult(await window.yoinkrApi.updates.download());
+  },
+  install: async (): Promise<void> => {
+    unwrapResult(await window.yoinkrApi.updates.install());
+  },
+  onStatus: (callback: (payload: UpdateStatusPayload) => void): (() => void) =>
+    window.yoinkrApi.updates.onStatus(callback),
+};
+
 export const yoinkrClient = {
   app: appClient,
   settings: settingsClient,
@@ -101,4 +118,5 @@ export const yoinkrClient = {
   editor: editorClient,
   tools: toolsClient,
   diagnostics: diagnosticsClient,
+  updates: updatesClient,
 };

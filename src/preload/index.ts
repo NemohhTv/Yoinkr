@@ -5,6 +5,7 @@ import type { YoinkrApi } from '@shared/contracts/api';
 import type { ToolDownloadProgress } from '@shared/types/common';
 import type { DownloadHistoryRecord, ItemDownloadProgress } from '@shared/types/downloader';
 import type { EditorExportProgressPayload } from '@shared/types/editor';
+import type { UpdateStatusPayload } from '@shared/types/update';
 
 const api: YoinkrApi = {
   app: {
@@ -85,6 +86,21 @@ const api: YoinkrApi = {
   },
   diagnostics: {
     getAppInfo: () => ipcRenderer.invoke(ipcChannels.diagnosticsGetAppInfo),
+  },
+  updates: {
+    getStatus: () => ipcRenderer.invoke(ipcChannels.updatesGetStatus),
+    checkNow: () => ipcRenderer.invoke(ipcChannels.updatesCheckNow),
+    download: () => ipcRenderer.invoke(ipcChannels.updatesDownload),
+    install: () => ipcRenderer.invoke(ipcChannels.updatesInstall),
+    onStatus: (callback: (payload: UpdateStatusPayload) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: UpdateStatusPayload): void => {
+        callback(payload);
+      };
+      ipcRenderer.on(ipcChannels.updatesStatus, handler);
+      return () => {
+        ipcRenderer.removeListener(ipcChannels.updatesStatus, handler);
+      };
+    },
   },
 };
 

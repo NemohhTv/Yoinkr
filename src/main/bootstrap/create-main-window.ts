@@ -1,19 +1,46 @@
 import { app, BrowserWindow, nativeImage, shell } from 'electron';
-import { existsSync } from 'node:fs';
+import type { NativeImage } from 'electron';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const resolveIcon = (): string | undefined => {
-  const candidates = [
-    join(app.getAppPath(), 'build/icon.ico'),
-    join(app.getAppPath(), '../build/icon.ico'),
+/**
+ * Packaged apps load the window/taskbar icon from a real file on disk.
+ * Paths inside `app.asar` are unreliable with `nativeImage.createFromPath` on Windows.
+ * `extraResources` copies `build/icon.ico` → `resources/app-icon.ico` at build time.
+ */
+const resolveWindowIcon = (): NativeImage | undefined => {
+  const candidates: string[] = [];
+
+  if (app.isPackaged && process.resourcesPath) {
+    candidates.push(join(process.resourcesPath, 'app-icon.ico'));
+  }
+
+  candidates.push(
+    join(app.getAppPath(), 'build', 'icon.ico'),
+    join(app.getAppPath(), '..', 'build', 'icon.ico'),
     join(__dirname, '../../build/icon.ico'),
-  ];
-  return candidates.find((p) => existsSync(p));
+  );
+
+  const iconPath = candidates.find((p) => existsSync(p));
+  if (!iconPath) {
+    return undefined;
+  }
+
+  try {
+    /** Prefer buffer load — works for ASAR-packed copies and plain files. */
+    return nativeImage.createFromBuffer(readFileSync(iconPath));
+  } catch {
+    try {
+      return nativeImage.createFromPath(iconPath);
+    } catch {
+      return undefined;
+    }
+  }
 };
 
 export const createMainWindow = async (): Promise<BrowserWindow> => {
-  const iconPath = resolveIcon();
+  const icon = resolveWindowIcon();
 
   const window = new BrowserWindow({
     width: 1480,
@@ -23,7 +50,7 @@ export const createMainWindow = async (): Promise<BrowserWindow> => {
     show: false,
     backgroundColor: '#0b0f17',
     title: 'Yoinkr',
-    icon: iconPath ? nativeImage.createFromPath(iconPath) : undefined,
+    icon,
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),

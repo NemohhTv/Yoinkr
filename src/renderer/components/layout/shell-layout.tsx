@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from 'react-router-dom';
 
 import { useAppState } from '@renderer/app/providers/app-state-context';
+import { UpdateStatusBar } from '@renderer/components/layout/update-status-bar';
 import { DownloaderPage } from '@renderer/features/downloader/downloader-page';
 import { EditorPage } from '@renderer/features/editor/editor-page';
 import { SettingsPage } from '@renderer/features/settings/settings-page';
@@ -48,18 +49,23 @@ export const ShellLayout = (): JSX.Element => {
         </nav>
       </aside>
 
-      <div className="main-frame">
-        <main className="main-content">
-          <div style={{ display: currentPath === '/downloader' ? 'contents' : 'none' }}>
-            <DownloaderPage />
-          </div>
-          <div style={{ display: currentPath === '/editor' ? 'contents' : 'none' }}>
-            <EditorPage />
-          </div>
-          <div style={{ display: currentPath === '/settings' ? 'contents' : 'none' }}>
-            <SettingsPage />
-          </div>
-        </main>
+      <div className="main-column">
+        <div className="main-frame">
+          <main className="main-content">
+            <div style={{ display: currentPath === '/downloader' ? 'contents' : 'none' }}>
+              <DownloaderPage />
+            </div>
+            <div style={{ display: currentPath === '/editor' ? 'contents' : 'none' }}>
+              <EditorPage />
+            </div>
+            <div style={{ display: currentPath === '/settings' ? 'contents' : 'none' }}>
+              <SettingsPage />
+            </div>
+          </main>
+        </div>
+        <footer className="app-status-footer">
+          <UpdateStatusBar appVersion={bootstrapState.appVersion} />
+        </footer>
       </div>
     </div>
   );
