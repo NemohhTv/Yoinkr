@@ -36,15 +36,19 @@ export const UpdateStatusBar = ({ appVersion }: { appVersion: string }): JSX.Ele
   }, []);
 
   const onCheckUpdates = useCallback(() => {
-    void yoinkrClient.updates.checkNow();
+    void yoinkrClient.updates.checkNow().catch(() => {
+      /* autoUpdater `error` event also updates snapshot; avoid unhandled rejection */
+    });
   }, []);
 
   const onDownload = useCallback(() => {
-    void yoinkrClient.updates.download();
+    void yoinkrClient.updates.download().catch(() => {
+      /* same — phase may move to `error` via updater event */
+    });
   }, []);
 
   const onInstall = useCallback(() => {
-    void yoinkrClient.updates.install();
+    void yoinkrClient.updates.install().catch(() => {});
   }, []);
 
   const showDownload = status.phase === 'available';

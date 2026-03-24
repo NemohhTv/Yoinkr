@@ -186,6 +186,7 @@ const POST_DOWNLOAD_ACTIVITY_MS = 15_000;
 export const useDownloaderController = () => {
   const location = useLocation();
   const postDownloadActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueItemsRef = useRef<QueueCard[]>([]);
 
   const [form, setForm] = useState<DownloaderFormState>(initialForm);
   const [validation, setValidation] = useState<DownloadUrlValidation[]>([]);
@@ -195,6 +196,10 @@ export const useDownloaderController = () => {
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activityMessage, setActivityMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    queueItemsRef.current = queueItems;
+  }, [queueItems]);
 
   const activeValidation = useMemo(
     () => getActiveValidation(validation, activeValidationUrl),
@@ -525,12 +530,20 @@ export const useDownloaderController = () => {
   }, []);
 
   const downloadItem = useCallback(async (id: string): Promise<void> => {
-    const item = queueItems.find((q) => q.id === id);
+    const item = queueItemsRef.current.find((q) => q.id === id);
     if (!item || item.status === 'downloading' || item.status === 'merging' || item.status === 'converting') return;
 
     setQueueItems((current) =>
       current.map((q) =>
-        q.id === id ? { ...q, status: 'downloading' as const, progressPercent: 0, progressMessage: 'Starting...' } : q,
+        q.id === id
+          ? {
+              ...q,
+              status: 'downloading' as const,
+              progressPercent: 0,
+              progressMessage: 'Starting...',
+              outputPath: null,
+            }
+          : q,
       ),
     );
 
@@ -597,7 +610,7 @@ export const useDownloaderController = () => {
         ),
       );
     }
-  }, [queueItems, clearPostDownloadActivityTimer]);
+  }, [clearPostDownloadActivityTimer]);
 
   const cancelItem = useCallback(async (id: string): Promise<void> => {
     try {

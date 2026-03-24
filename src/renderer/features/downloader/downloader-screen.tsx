@@ -153,12 +153,12 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
                     <button className="dl-item-action-btn dl-item-action-cancel" onClick={() => void controller.cancelItem(item.id)} title="Cancel download">■</button>
                   ) : (
                     <button
-                      className={`dl-item-action-btn ${item.status === 'staged' || item.status === 'error' ? 'dl-item-action-download' : ''}`}
+                      className={`dl-item-action-btn ${item.status === 'staged' || item.status === 'error' || item.status === 'complete' ? 'dl-item-action-download' : ''}`}
                       onClick={() => void controller.downloadItem(item.id)}
-                      title="Download"
-                      disabled={item.status === 'complete'}
+                      title={item.status === 'complete' ? 'Download again' : 'Download'}
+                      type="button"
                     >
-                      {item.status === 'complete' ? '✓' : '↓'}
+                      {item.status === 'complete' ? '↻' : '↓'}
                     </button>
                   )}
                   {item.status === 'complete' && item.outputPath && (
