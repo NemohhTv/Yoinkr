@@ -47,6 +47,8 @@ export const ShellLayout = (): JSX.Element => {
             </NavLink>
           ))}
         </nav>
+
+        <UpdateStatusBar appVersion={bootstrapState.appVersion} />
       </aside>
 
       <div className="main-column">
@@ -63,9 +65,6 @@ export const ShellLayout = (): JSX.Element => {
             </div>
           </main>
         </div>
-        <footer className="app-status-footer">
-          <UpdateStatusBar appVersion={bootstrapState.appVersion} />
-        </footer>
       </div>
     </div>
   );

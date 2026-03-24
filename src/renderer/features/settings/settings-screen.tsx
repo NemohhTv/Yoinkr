@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import type { BinaryStatus, DownloadableToolName } from '@shared/types/common';
 import type { AppSettings, YtDlpCookieMode } from '@shared/types/settings';
 import type { ToolDownloadState } from './use-settings-controller';
@@ -171,6 +173,7 @@ const DirectoryRow = ({
 
 export const SettingsScreen = ({ controller }: { controller: SettingsController }): JSX.Element => {
   const { draft, binaryStatus, diagnostics, error, isSaving } = controller;
+  const [revealCookiesPath, setRevealCookiesPath] = useState(false);
 
   if (!draft) {
     return <div className="panel">Loading settings...</div>;
@@ -279,7 +282,22 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
             <div className="field-group">
               <label className="field">
                 <span>cookies.txt path</span>
-                <input value={draft.ytDlpCookiesFilePath} readOnly placeholder="Browse to your exported cookies.txt" />
+                <input
+                  className="settings-cookies-path-input"
+                  type={draft.ytDlpCookiesFilePath && !revealCookiesPath ? 'password' : 'text'}
+                  value={draft.ytDlpCookiesFilePath}
+                  readOnly
+                  placeholder="Browse to your exported cookies.txt"
+                  autoComplete="off"
+                  spellCheck={false}
+                  title={draft.ytDlpCookiesFilePath ? 'Click to show or hide the full path' : undefined}
+                  onFocus={() => {
+                    setRevealCookiesPath(true);
+                  }}
+                  onBlur={() => {
+                    setRevealCookiesPath(false);
+                  }}
+                />
               </label>
               <button type="button" className="button secondary" onClick={() => void controller.pickCookiesFile()}>Browse…</button>
             </div>

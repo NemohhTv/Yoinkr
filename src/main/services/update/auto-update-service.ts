@@ -1,8 +1,14 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { BrowserWindow, app } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import electronUpdater from 'electron-updater';
 
 import { ipcChannels } from '@shared/contracts/channels';
 import type { UpdateStatusPayload } from '@shared/types/update';
+
+/** `electron-updater` is CJS; default import avoids ESM named-export errors in packaged `out/main`. */
+const { autoUpdater } = electronUpdater;
 
 let snapshot: UpdateStatusPayload = { phase: 'idle' };
 let updaterEnabled = false;
@@ -16,6 +22,18 @@ function broadcast(): void {
 function setSnapshot(patch: Partial<UpdateStatusPayload>): void {
   snapshot = { ...snapshot, ...patch };
   broadcast();
+}
+
+function isMissingUpdateMetadataError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('ENOENT') && msg.includes('app-update.yml');
+}
+
+function normalizeUpdateError(err: unknown): string {
+  if (isMissingUpdateMetadataError(err)) {
+    return '';
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 function normalizeReleaseNotes(notes: unknown): string | undefined {
@@ -51,14 +69,14 @@ export function isUpdaterEnabled(): boolean {
 }
 
 /**
- * GitHub Releases + electron-builder: `latest.yml` and installers are published next to each other.
- * Only the NSIS-installed build checks for updates; portable builds skip (no stable install path).
+ * GitHub Releases + electron-builder: `app-update.yml` lives in `resources` for published installers.
+ * Plain `win-unpacked` builds often omit it — skip the updater instead of surfacing ENOENT.
  */
 export function initializeAutoUpdater(): void {
   if (!app.isPackaged) {
     setSnapshot({
       phase: 'disabled',
-      disabledReason: 'Updates run in installed builds only (not dev).',
+      disabledReason: 'Dev',
     });
     updaterEnabled = false;
     return;
@@ -67,7 +85,17 @@ export function initializeAutoUpdater(): void {
   if (process.env.PORTABLE_EXECUTABLE_DIR || process.env.PORTABLE_EXECUTABLE_FILE) {
     setSnapshot({
       phase: 'disabled',
-      disabledReason: 'Portable build — use the NSIS installer for automatic updates.',
+      disabledReason: 'Portable',
+    });
+    updaterEnabled = false;
+    return;
+  }
+
+  const updateConfigPath = join(process.resourcesPath, 'app-update.yml');
+  if (!existsSync(updateConfigPath)) {
+    setSnapshot({
+      phase: 'disabled',
+      disabledReason: 'Unpackaged build',
     });
     updaterEnabled = false;
     return;
@@ -100,9 +128,18 @@ export function initializeAutoUpdater(): void {
   });
 
   autoUpdater.on('error', (err) => {
+    if (isMissingUpdateMetadataError(err)) {
+      updaterEnabled = false;
+      setSnapshot({
+        phase: 'disabled',
+        disabledReason: 'Unpackaged build',
+        error: undefined,
+      });
+      return;
+    }
     setSnapshot({
       phase: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      error: normalizeUpdateError(err) || 'Update error',
     });
   });
 
@@ -124,12 +161,24 @@ export function initializeAutoUpdater(): void {
 
   setTimeout(() => {
     void autoUpdater.checkForUpdates().catch((err) => {
-      setSnapshot({
-        phase: 'error',
-        error: err instanceof Error ? err.message : String(err),
-      });
+      if (isMissingUpdateMetadataError(err)) {
+        updaterEnabled = false;
+        setSnapshot({
+          phase: 'disabled',
+          disabledReason: 'Unpackaged build',
+          error: undefined,
+        });
+        return;
+      }
+      const text = normalizeUpdateError(err);
+      if (text) {
+        setSnapshot({
+          phase: 'error',
+          error: text,
+        });
+      }
     });
-  }, 4000);
+  }, 400);
 }
 
 export async function checkForUpdatesNow(): Promise<void> {

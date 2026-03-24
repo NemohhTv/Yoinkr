@@ -3,28 +3,27 @@ import { useCallback, useEffect, useState } from 'react';
 import { yoinkrClient } from '@renderer/lib/api/yoinkr-client';
 import type { UpdateStatusPayload } from '@shared/types/update';
 
-const labelForPhase = (status: UpdateStatusPayload, currentVersion: string): string => {
+/** Short line for the sidebar strip (no long paths). */
+const statusLine = (status: UpdateStatusPayload): string => {
   switch (status.phase) {
     case 'disabled':
-      return status.disabledReason ?? 'Updates unavailable';
+      return status.disabledReason ?? '—';
     case 'idle':
-      return `v${currentVersion}`;
+      return '…';
     case 'checking':
-      return `v${currentVersion} · Checking for updates…`;
+      return 'Checking…';
     case 'not-available':
-      return `v${currentVersion} · Up to date`;
+      return 'Up to date';
     case 'available':
-      return status.availableVersion
-        ? `v${currentVersion} · v${status.availableVersion} available`
-        : `v${currentVersion} · Update available`;
+      return status.availableVersion ? `v${status.availableVersion} ready` : 'Update ready';
     case 'downloading':
-      return `v${currentVersion} · Downloading${status.percent != null ? ` ${status.percent}%` : '…'}`;
+      return status.percent != null ? `Downloading ${status.percent}%` : 'Downloading…';
     case 'downloaded':
-      return `v${currentVersion} · Ready to install v${status.availableVersion ?? ''}`.trim();
+      return 'Ready to install';
     case 'error':
-      return `v${currentVersion} · ${status.error ?? 'Update error'}`;
+      return status.error?.includes('ENOENT') ? '—' : (status.error ?? 'Error');
     default:
-      return `v${currentVersion}`;
+      return '';
   }
 };
 
@@ -36,7 +35,7 @@ export const UpdateStatusBar = ({ appVersion }: { appVersion: string }): JSX.Ele
     return yoinkrClient.updates.onStatus(setStatus);
   }, []);
 
-  const onCheck = useCallback(() => {
+  const onCheckUpdates = useCallback(() => {
     void yoinkrClient.updates.checkNow();
   }, []);
 
@@ -48,37 +47,44 @@ export const UpdateStatusBar = ({ appVersion }: { appVersion: string }): JSX.Ele
     void yoinkrClient.updates.install();
   }, []);
 
-  const showCheck =
+  const showDownload = status.phase === 'available';
+  const showInstall = status.phase === 'downloaded';
+  const showRetry = status.phase === 'error';
+  const showCheckUpdates =
     status.phase !== 'disabled' &&
     status.phase !== 'checking' &&
     status.phase !== 'downloading' &&
-    status.phase !== 'downloaded';
-
-  const showDownload = status.phase === 'available';
-  const showInstall = status.phase === 'downloaded';
+    status.phase !== 'downloaded' &&
+    status.phase !== 'error';
 
   return (
-    <div className="update-status-bar">
-      <span className="update-status-bar__text" title={status.releaseNotes}>
-        {labelForPhase(status, appVersion)}
-      </span>
-      <span className="update-status-bar__actions">
-        {showCheck ? (
-          <button type="button" className="button compact ghost update-status-bar__btn" onClick={onCheck}>
+    <div className="sidebar-update">
+      <div className="sidebar-update__version">v{appVersion}</div>
+      <div className="sidebar-update__status" title={status.releaseNotes}>
+        {statusLine(status)}
+      </div>
+      <div className="sidebar-update__actions">
+        {showCheckUpdates ? (
+          <button type="button" className="sidebar-update__btn ghost" onClick={onCheckUpdates}>
             Check updates
           </button>
         ) : null}
         {showDownload ? (
-          <button type="button" className="button compact primary update-status-bar__btn" onClick={onDownload}>
+          <button type="button" className="sidebar-update__btn primary" onClick={onDownload}>
             Download
           </button>
         ) : null}
         {showInstall ? (
-          <button type="button" className="button compact primary update-status-bar__btn" onClick={onInstall}>
-            Restart &amp; install
+          <button type="button" className="sidebar-update__btn primary" onClick={onInstall}>
+            Install
           </button>
         ) : null}
-      </span>
+        {showRetry ? (
+          <button type="button" className="sidebar-update__btn ghost" onClick={onCheckUpdates}>
+            Retry
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 };
