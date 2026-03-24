@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import treeKill from 'tree-kill';
@@ -104,6 +104,11 @@ const FFMPEG_TIME_RE = /\btime=(\d{2}:\d{2}:\d{2}\.\d{2})\b/;
 /** Large downloads + merge + AAC remux can exceed 30 minutes. */
 const DOWNLOAD_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const FFMPEG_PROGRESS_THROTTLE_MS = 450;
+/**
+ * Older yt-dlp builds (e.g. 2023.01.17) have much worse `--download-sections` behavior/perf on YouTube.
+ * Gate section downloads to a modern baseline so users update instead of waiting on near-full fetches.
+ */
+const MIN_YT_DLP_SECTION_VERSION = { year: 2024, month: 7, day: 1 } as const;
 /** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
 const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
 /**
@@ -158,6 +163,12 @@ export class YtDlpDownloadService {
       throw new ServiceError(
         'TOOL_MISSING',
         'Downloading part of a video requires ffmpeg. Configure it in Settings > Tool configuration.',
+      );
+    }
+    if (this.requiresPartialSectionDownload(request) && this.isYtDlpTooOldForSections(ytDlp.resolvedPath)) {
+      throw new ServiceError(
+        'TOOL_MISSING',
+        'Section downloads require a newer yt-dlp. In Settings, click "Update yt-dlp" and retry.',
       );
     }
     const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
@@ -596,7 +607,13 @@ export class YtDlpDownloadService {
 
     });
 
-    const tryM4aCopyRemux = this.prefersM4aDashAudio(request);
+    /**
+     * For full downloads, copy-first can be a big win when DASH audio is m4a/AAC.
+     * For section downloads, copy-first can backfire: if selected audio is still Opus,
+     * yt-dlp may fail at remux end and we re-run the whole section in encode mode.
+     * Use single-pass encode for sections to avoid that "takes forever" second attempt.
+     */
+    const tryM4aCopyRemux = this.prefersM4aDashAudio(request) && !this.requiresPartialSectionDownload(request);
 
     const runWithRemuxMode = (selection: string[] | undefined, mode: 'copy' | 'encode'): string[] =>
       this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, selection, mode);
@@ -638,6 +655,33 @@ export class YtDlpDownloadService {
       return false;
     }
     return message.toLowerCase().includes('requested format is not available');
+  }
+
+  private isYtDlpTooOldForSections(binaryPath: string): boolean {
+    try {
+      const probe = spawnSync(binaryPath, ['--version'], {
+        windowsHide: true,
+        encoding: 'utf8',
+        timeout: 8000,
+      });
+      const raw = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`.trim();
+      const m = raw.match(/(\d{4})\.(\d{1,2})\.(\d{1,2})/);
+      if (!m) {
+        return false;
+      }
+      const year = parseInt(m[1], 10);
+      const month = parseInt(m[2], 10);
+      const day = parseInt(m[3], 10);
+      if (year !== MIN_YT_DLP_SECTION_VERSION.year) {
+        return year < MIN_YT_DLP_SECTION_VERSION.year;
+      }
+      if (month !== MIN_YT_DLP_SECTION_VERSION.month) {
+        return month < MIN_YT_DLP_SECTION_VERSION.month;
+      }
+      return day < MIN_YT_DLP_SECTION_VERSION.day;
+    } catch {
+      return false;
+    }
   }
 
   /** Copy-remux to MP4 failed (e.g. Opus audio) — retry with AAC encode. */
