@@ -32,21 +32,35 @@ export const EditorTimelinePanel = ({ controller }: { controller: EditorControll
 
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<DragState | null>(null);
+  const scrubbingRef = useRef(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; segmentId: string } | null>(null);
 
   const secondsFromMouseX = useCallback((clientX: number): number => {
     const track = trackRef.current;
-    if (!track || sourceDuration <= 0) { return 0; }
+    if (!track || sourceDuration <= 0) {
+      return 0;
+    }
     const rect = track.getBoundingClientRect();
     const fraction = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     return fraction * sourceDuration;
   }, [sourceDuration]);
 
-  const onTrackClick = useCallback((event: React.MouseEvent) => {
-    setContextMenu(null);
-    if (dragRef.current) { return; }
-    seekTo(secondsFromMouseX(event.clientX));
-  }, [seekTo, secondsFromMouseX]);
+  const onTrackPointerDown = useCallback(
+    (event: React.PointerEvent) => {
+      setContextMenu(null);
+      if (dragRef.current) {
+        return;
+      }
+      const target = event.target as HTMLElement;
+      if (target.closest('.editor-timeline-segment')) {
+        return;
+      }
+      scrubbingRef.current = true;
+      trackRef.current?.setPointerCapture(event.pointerId);
+      seekTo(secondsFromMouseX(event.clientX));
+    },
+    [seekTo, secondsFromMouseX],
+  );
 
   const onHandlePointerDown = useCallback((event: React.PointerEvent, segmentId: string, field: 'start' | 'end') => {
     event.stopPropagation();
@@ -70,18 +84,34 @@ export const EditorTimelinePanel = ({ controller }: { controller: EditorControll
     dragRef.current = { segmentId, mode: 'move', offsetSeconds: offset };
   }, [secondsFromMouseX, segments]);
 
-  const onPointerMove = useCallback((event: React.PointerEvent) => {
-    const drag = dragRef.current;
-    if (!drag) { return; }
-    const seconds = secondsFromMouseX(event.clientX);
-    if (drag.mode === 'move') {
-      moveSegmentOnTimeline(drag.segmentId, seconds - drag.offsetSeconds);
-    } else {
-      updateSegmentBoundary(drag.segmentId, drag.mode, seconds);
-    }
-  }, [secondsFromMouseX, updateSegmentBoundary, moveSegmentOnTimeline]);
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent) => {
+      const drag = dragRef.current;
+      if (drag) {
+        const seconds = secondsFromMouseX(event.clientX);
+        if (drag.mode === 'move') {
+          moveSegmentOnTimeline(drag.segmentId, seconds - drag.offsetSeconds);
+        } else {
+          updateSegmentBoundary(drag.segmentId, drag.mode, seconds);
+        }
+        return;
+      }
+      if (scrubbingRef.current) {
+        seekTo(secondsFromMouseX(event.clientX));
+      }
+    },
+    [secondsFromMouseX, updateSegmentBoundary, moveSegmentOnTimeline, seekTo],
+  );
 
-  const onPointerUp = useCallback(() => {
+  const onPointerUp = useCallback((event: React.PointerEvent) => {
+    if (scrubbingRef.current) {
+      scrubbingRef.current = false;
+      try {
+        trackRef.current?.releasePointerCapture(event.pointerId);
+      } catch {
+        // ignore if capture already released
+      }
+    }
     dragRef.current = null;
   }, []);
 
@@ -109,9 +139,11 @@ export const EditorTimelinePanel = ({ controller }: { controller: EditorControll
       <div
         className="editor-timeline-track"
         ref={trackRef}
-        onClick={onTrackClick}
+        onPointerDown={onTrackPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        title={sourceDuration > 0 ? 'Click or drag on the timeline to scrub' : 'Waiting for duration…'}
       >
         {selectionWidthPercent > 0.05 && (
           <div
@@ -146,7 +178,16 @@ export const EditorTimelinePanel = ({ controller }: { controller: EditorControll
           );
         })}
 
-        <div className="editor-timeline-playhead" style={{ left: `${playheadPercent}%` }} />
+        <div
+          className="editor-timeline-playhead"
+          style={{ left: `${playheadPercent}%` }}
+          onPointerDown={(event) => {
+            event.stopPropagation();
+            scrubbingRef.current = true;
+            trackRef.current?.setPointerCapture(event.pointerId);
+            seekTo(secondsFromMouseX(event.clientX));
+          }}
+        />
       </div>
 
       {contextMenu && (

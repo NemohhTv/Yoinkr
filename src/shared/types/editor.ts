@@ -83,6 +83,10 @@ export interface EditorOpenResult {
   request: EditorOpenRequest;
   source: EditorSourceSummary;
   mediaInfo: EditorMediaInfo;
+  /** Absolute path for <video>/<audio> (source or cached H.264 proxy). */
+  previewPlaybackPath: string;
+  /** Warning when preview cannot run (e.g. FFmpeg missing for HEVC). */
+  previewPlaybackNote: string | null;
 }
 
 export interface EditorCutBoundaryInfo {
@@ -130,12 +134,33 @@ export interface EditorExportPreview {
   exportMode: EditorExportMode;
   cutMode: EditorCutMode;
   strategy: EditorExportStrategy;
+  /** Short label for UI, e.g. "Lossless stream-copy (no re-encode)" */
+  strategyLabel: string;
+  /** Why this strategy was chosen and what to expect (speed, CPU, disk). */
+  strategyExplanation: string;
   canExport: boolean;
   mergeSupported: boolean;
   outputDescription: string;
   outputPathHint: string | null;
   warnings: string[];
   segments: EditorPreviewSegment[];
+}
+
+/** Live export progress from main → renderer (throttled while ffmpeg runs). */
+export interface EditorExportProgressPayload {
+  strategy: EditorExportStrategy;
+  strategyLabel: string;
+  strategyExplanation: string;
+  phase: 'starting' | 'segment' | 'merge';
+  stepIndex: number;
+  stepCount: number;
+  stepLabel: string;
+  /** Output timeline from ffmpeg progress (microseconds). */
+  outTimeUs?: number;
+  /** Segment duration in seconds (for rough % during this step). */
+  segmentDurationSeconds?: number;
+  totalSizeBytes?: number;
+  speed?: string;
 }
 
 export interface EditorExportRequest {

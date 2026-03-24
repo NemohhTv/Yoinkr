@@ -1,18 +1,33 @@
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, extname, join, resolve } from 'node:path';
 
 import type { AppPathsService } from '@main/services/paths/app-paths-service';
-import type { ProcessRunner } from '@main/services/shared/process-runner';
 import { ServiceError } from '@main/services/shared/service-error';
 import type { BinaryResolver } from '@main/services/tools/binary-resolver';
-import type { EditorExportPreview, EditorExportRequest, EditorExportResult, EditorExportStrategy, EditorPreviewSegment } from '@shared/types/editor';
+import type {
+  EditorExportMode,
+  EditorExportProgressPayload,
+  EditorExportRequest,
+  EditorExportResult,
+  EditorExportStrategy,
+  EditorPreviewSegment,
+} from '@shared/types/editor';
 import type { AppSettings } from '@shared/types/settings';
 
 import type { FfprobeAnalysisService } from './ffprobe-analysis-service';
 import type { ExportPlanningService } from './export-planning-service';
 
-const supportedStreamCopyMergeExtensions = new Set(['.mp4', '.m4v', '.mov', '.mkv', '.webm', '.m4a', '.mp3', '.wav']);
 const supportedExactVideoExtensions = new Set(['.mp4', '.m4v', '.mov', '.mkv']);
+
+export interface EditorExportCallbacks {
+  onProgress?: (payload: EditorExportProgressPayload) => void;
+}
+
+interface ExportProgressHooks {
+  beforeFfmpeg: (phase: 'segment' | 'merge', label: string, segmentDurationSeconds?: number) => void;
+  onFfmpegPulse: (pulse: { outTimeUs?: number; totalSizeBytes?: number; speed?: string }) => void;
+}
 
 const sanitizeName = (value: string): string => {
   const withoutInvalidChars = Array.from(value)
@@ -36,27 +51,151 @@ const formatSeconds = (seconds: number): string => {
     .padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
 };
 
+function computeExportStepCount(mode: EditorExportMode, segmentCount: number): number {
+  if (mode === 'single-cut') {
+    return 1;
+  }
+  if (mode === 'separate-files') {
+    return segmentCount;
+  }
+  if (mode === 'merge-cuts') {
+    return segmentCount <= 1 ? 1 : segmentCount + 1;
+  }
+  if (segmentCount <= 1) {
+    return 2;
+  }
+  return segmentCount + segmentCount + 1;
+}
+
+function runFfmpegWithProgress(
+  ffmpegPath: string,
+  coreArgs: string[],
+  options: {
+    onPulse?: (pulse: { outTimeUs?: number; totalSizeBytes?: number; speed?: string }) => void;
+  },
+): Promise<{ exitCode: number | null; stderrTail: string }> {
+  const args = ['-hide_banner', '-nostats', '-loglevel', 'error', '-progress', '-', ...coreArgs];
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpegPath, args, {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let stderrTail = '';
+    let stdoutBuf = '';
+    const last: { outTimeUs?: number; totalSizeBytes?: number; speed?: string } = {};
+
+    const flushPulse = (): void => {
+      if (options.onPulse && (last.outTimeUs !== undefined || last.totalSizeBytes !== undefined || last.speed !== undefined)) {
+        options.onPulse({ ...last });
+      }
+    };
+
+    child.stderr?.on('data', (chunk: Buffer | string) => {
+      stderrTail += chunk.toString();
+      if (stderrTail.length > 96_000) {
+        stderrTail = stderrTail.slice(-48_000);
+      }
+    });
+
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdoutBuf += chunk.toString();
+      const lines = stdoutBuf.split('\n');
+      stdoutBuf = lines.pop() ?? '';
+      for (const line of lines) {
+        const eq = line.indexOf('=');
+        if (eq <= 0) {
+          continue;
+        }
+        const key = line.slice(0, eq);
+        const val = line.slice(eq + 1).trim();
+        if (key === 'out_time_us') {
+          const n = Number.parseInt(val, 10);
+          if (Number.isFinite(n)) {
+            last.outTimeUs = n;
+          }
+        } else if (key === 'total_size') {
+          const n = Number.parseInt(val, 10);
+          if (Number.isFinite(n)) {
+            last.totalSizeBytes = n;
+          }
+        } else if (key === 'speed') {
+          last.speed = val;
+        } else if (key === 'progress' && (val === 'continue' || val === 'end')) {
+          flushPulse();
+        }
+      }
+    });
+
+    child.on('error', (error) => {
+      reject(new ServiceError('PROCESS_START_FAILED', 'Unable to start ffmpeg.', error.message));
+    });
+
+    child.on('close', (exitCode) => {
+      resolve({ exitCode: exitCode ?? -1, stderrTail });
+    });
+  });
+}
+
 export class FfmpegExportService {
   constructor(
     private readonly pathsService: AppPathsService,
-    private readonly processRunner: ProcessRunner,
     private readonly binaryResolver: BinaryResolver,
     private readonly ffprobeAnalysisService: FfprobeAnalysisService,
     private readonly exportPlanningService: ExportPlanningService,
   ) {}
 
-  async exportMedia(request: EditorExportRequest, settings: AppSettings): Promise<EditorExportResult> {
+  async exportMedia(
+    request: EditorExportRequest,
+    settings: AppSettings,
+    callbacks?: EditorExportCallbacks,
+  ): Promise<EditorExportResult> {
+    const rawOnProgress = callbacks?.onProgress;
+
     const resolved = this.binaryResolver.resolveTool('ffmpeg', settings);
     if (!resolved.resolvedPath || !resolved.exists) {
       throw new ServiceError('FFMPEG_NOT_FOUND', 'ffmpeg was not found. Configure it in Settings before exporting from the editor.');
     }
 
-    const preview = await this.exportPlanningService.previewExport(request, settings);
+    // Stream-copy cut mode: skip full-file keyframe scan (fast-trim style) — ffprobe JSON
+    // only, then FFmpeg stream-copy snaps to keyframes. Auto/Exact still need a scan for correct strategy.
+    const needKeyframeScan = request.cutMode !== 'stream-copy';
+
+    if (rawOnProgress) {
+      if (needKeyframeScan) {
+        rawOnProgress({
+          strategy: 'stream-copy',
+          strategyLabel: 'Preparing export',
+          strategyExplanation:
+            'Running one keyframe scan so Auto/Exact cut planning is accurate. Long files or network paths can take a while before FFmpeg starts.',
+          phase: 'starting',
+          stepIndex: 0,
+          stepCount: 1,
+          stepLabel: 'Keyframe analysis (single pass)…',
+        });
+      } else {
+        rawOnProgress({
+          strategy: 'stream-copy',
+          strategyLabel: 'Preparing export',
+          strategyExplanation:
+            'Fast path: container metadata only (no full-file packet scan). FFmpeg stream-copy will align output to the nearest keyframes — same tradeoff as a typical "fast trim" tool.',
+          phase: 'starting',
+          stepIndex: 0,
+          stepCount: 1,
+          stepLabel: 'Reading metadata…',
+        });
+      }
+    }
+
+    const mediaInfo = await this.ffprobeAnalysisService.inspectSource(request.sourcePath, settings, {
+      includeKeyframes: needKeyframeScan,
+    });
+    const preview = await this.exportPlanningService.previewExport(request, settings, mediaInfo);
     if (!preview.canExport) {
       throw new ServiceError('EXPORT_PLAN_INVALID', 'The current export request is not compatible with the selected mode.');
     }
 
-    const mediaInfo = await this.ffprobeAnalysisService.inspectSource(request.sourcePath, settings);
     if (!mediaInfo.streamCopySupported) {
       throw new ServiceError(
         'LOSSLESS_EXPORT_UNSUPPORTED',
@@ -67,6 +206,70 @@ export class FfmpegExportService {
     const sourceExtension = extname(request.sourcePath).toLowerCase();
     const sourceBaseName = sanitizeName(request.baseName?.trim() || basename(request.sourcePath, sourceExtension));
     const selectedSegments = this.validateSegments(preview.segments, mediaInfo.durationSeconds);
+    const stepCount = computeExportStepCount(request.exportMode, selectedSegments.length);
+
+    const base = {
+      strategy: preview.strategy,
+      strategyLabel: preview.strategyLabel,
+      strategyExplanation: preview.strategyExplanation,
+    };
+
+    let stepCounter = 0;
+    let currentPhase: 'segment' | 'merge' = 'segment';
+    let currentStepLabel = '';
+    let currentSegmentDuration: number | undefined;
+    let lastPulseAt = 0;
+
+    const emit = (payload: EditorExportProgressPayload): void => {
+      rawOnProgress?.(payload);
+    };
+
+    const beforeFfmpeg = (phase: 'segment' | 'merge', label: string, segmentDurationSeconds?: number): void => {
+      stepCounter += 1;
+      currentPhase = phase;
+      currentStepLabel = label;
+      currentSegmentDuration = segmentDurationSeconds;
+      lastPulseAt = 0;
+      emit({
+        ...base,
+        phase,
+        stepIndex: stepCounter,
+        stepCount,
+        stepLabel: label,
+        segmentDurationSeconds,
+      });
+    };
+
+    const onFfmpegPulse = (pulse: { outTimeUs?: number; totalSizeBytes?: number; speed?: string }): void => {
+      if (!rawOnProgress) {
+        return;
+      }
+      const now = Date.now();
+      if (now - lastPulseAt < 200) {
+        return;
+      }
+      lastPulseAt = now;
+      emit({
+        ...base,
+        phase: currentPhase,
+        stepIndex: stepCounter,
+        stepCount,
+        stepLabel: currentStepLabel,
+        segmentDurationSeconds: currentSegmentDuration,
+        ...pulse,
+      });
+    };
+
+    const hooks: ExportProgressHooks = { beforeFfmpeg, onFfmpegPulse };
+
+    emit({
+      ...base,
+      phase: 'starting',
+      stepIndex: 0,
+      stepCount,
+      stepLabel: 'Preparing export…',
+    });
+
     const outputPaths: string[] = [];
 
     if (request.exportMode === 'single-cut') {
@@ -83,6 +286,7 @@ export class FfmpegExportService {
         preview.strategy,
         mediaInfo.hasVideo,
         sourceExtension,
+        hooks,
       );
       outputPaths.push(outputFilePath);
     }
@@ -97,6 +301,7 @@ export class FfmpegExportService {
         sourceHasVideo: mediaInfo.hasVideo,
         sourceExtension,
         sourceBaseName,
+        hooks,
       });
       outputPaths.push(...separatePaths);
     }
@@ -109,6 +314,7 @@ export class FfmpegExportService {
         segments: selectedSegments,
         sourceExtension,
         strategy: preview.strategy,
+        hooks,
       });
       outputPaths.push(mergedPath);
     }
@@ -132,6 +338,7 @@ export class FfmpegExportService {
     sourceHasVideo,
     sourceExtension,
     sourceBaseName,
+    hooks,
   }: {
     ffmpegPath: string;
     sourcePath: string;
@@ -141,6 +348,7 @@ export class FfmpegExportService {
     sourceHasVideo: boolean;
     sourceExtension: string;
     sourceBaseName: string;
+    hooks: ExportProgressHooks;
   }): Promise<string[]> {
     if (!outputDirectory) {
       throw new ServiceError('OUTPUT_DIRECTORY_REQUIRED', 'Choose an export folder before exporting separate files.');
@@ -155,7 +363,7 @@ export class FfmpegExportService {
         outputDirectory,
         `${sourceBaseName}_${String(index + 1).padStart(2, '0')}_${labelPart}${targetExtension}`,
       );
-      await this.exportSingleSegment(ffmpegPath, sourcePath, segment, outputPath, strategy, sourceHasVideo, sourceExtension);
+      await this.exportSingleSegment(ffmpegPath, sourcePath, segment, outputPath, strategy, sourceHasVideo, sourceExtension, hooks);
       outputPaths.push(outputPath);
     }
 
@@ -169,6 +377,7 @@ export class FfmpegExportService {
     segments,
     sourceExtension,
     strategy,
+    hooks,
   }: {
     ffmpegPath: string;
     request: EditorExportRequest;
@@ -176,6 +385,7 @@ export class FfmpegExportService {
     segments: EditorPreviewSegment[];
     sourceExtension: string;
     strategy: EditorExportStrategy;
+    hooks: ExportProgressHooks;
   }): Promise<string> {
     const outputFilePath = request.outputFilePath?.trim();
     if (!outputFilePath) {
@@ -196,7 +406,7 @@ export class FfmpegExportService {
     this.ensureOutputPathSafe(request.sourcePath, outputFilePath);
 
     if (segments.length === 1) {
-      await this.exportSingleSegment(ffmpegPath, request.sourcePath, segments[0], outputFilePath, strategy, sourceHasVideo, sourceExtension);
+      await this.exportSingleSegment(ffmpegPath, request.sourcePath, segments[0], outputFilePath, strategy, sourceHasVideo, sourceExtension, hooks);
       return outputFilePath;
     }
 
@@ -207,7 +417,7 @@ export class FfmpegExportService {
     try {
       for (const [index, segment] of segments.entries()) {
         const tempPath = join(workingDirectory, `segment_${String(index + 1).padStart(2, '0')}${outputExtension}`);
-        await this.exportSingleSegment(ffmpegPath, request.sourcePath, segment, tempPath, strategy, sourceHasVideo, sourceExtension);
+        await this.exportSingleSegment(ffmpegPath, request.sourcePath, segment, tempPath, strategy, sourceHasVideo, sourceExtension, hooks);
         tempSegmentPaths.push(tempPath);
       }
 
@@ -217,36 +427,34 @@ export class FfmpegExportService {
         .join('\n');
       writeFileSync(concatFilePath, concatContent, 'utf8');
 
-      const result = await this.processRunner.run({
-        command: ffmpegPath,
-        args: [
-          '-hide_banner',
-          '-loglevel',
-          'error',
-          '-f',
-          'concat',
-          '-safe',
-          '0',
-          '-i',
-          concatFilePath,
-          '-c',
-          strategy === 'stream-copy' ? 'copy' : 'copy',
-          '-map',
-          '0',
-          '-n',
-          outputFilePath,
-        ],
-        timeoutMs: 0,
-        maxBufferBytes: 4 * 1024 * 1024,
+      hooks.beforeFfmpeg('merge', 'Merging clips into one file…');
+
+      const coreArgs = [
+        '-f',
+        'concat',
+        '-safe',
+        '0',
+        '-i',
+        concatFilePath,
+        '-c',
+        strategy === 'stream-copy' ? 'copy' : 'copy',
+        '-map',
+        '0',
+        '-n',
+        outputFilePath,
+      ];
+
+      const { exitCode, stderrTail } = await runFfmpegWithProgress(ffmpegPath, coreArgs, {
+        onPulse: hooks.onFfmpegPulse,
       });
 
-      if (result.exitCode !== 0) {
+      if (exitCode !== 0) {
         throw new ServiceError(
           'MERGE_EXPORT_FAILED',
           strategy === 'stream-copy'
             ? 'ffmpeg could not merge the selected cuts losslessly.'
             : 'ffmpeg could not merge the selected exact cuts.',
-          result.stderr || result.stdout || undefined,
+          stderrTail || undefined,
         );
       }
 
@@ -285,15 +493,19 @@ export class FfmpegExportService {
     strategy: EditorExportStrategy,
     sourceHasVideo: boolean,
     sourceExtension: string,
+    hooks: ExportProgressHooks,
   ): Promise<void> {
     this.ensureOutputPathSafe(sourcePath, outputPath);
 
+    const durationSec = Math.max(0, segment.boundary.actualEndSeconds - segment.boundary.actualStartSeconds);
+    hooks.beforeFfmpeg('segment', `Cut: ${segment.label}`, durationSec);
+
     if (strategy === 'stream-copy') {
-      await this.runStreamCopyCut(ffmpegPath, sourcePath, segment, outputPath);
+      await this.runStreamCopyCut(ffmpegPath, sourcePath, segment, outputPath, hooks.onFfmpegPulse);
       return;
     }
 
-    await this.runExactReencodeCut(ffmpegPath, sourcePath, segment, outputPath, sourceHasVideo, sourceExtension);
+    await this.runExactReencodeCut(ffmpegPath, sourcePath, segment, outputPath, sourceHasVideo, sourceExtension, hooks.onFfmpegPulse);
   }
 
   private async runStreamCopyCut(
@@ -301,37 +513,32 @@ export class FfmpegExportService {
     sourcePath: string,
     segment: EditorPreviewSegment,
     outputPath: string,
+    onPulse?: (pulse: { outTimeUs?: number; totalSizeBytes?: number; speed?: string }) => void,
   ): Promise<void> {
-    const result = await this.processRunner.run({
-      command: ffmpegPath,
-      args: [
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-ss',
-        formatSeconds(segment.boundary.actualStartSeconds),
-        '-to',
-        formatSeconds(segment.boundary.actualEndSeconds),
-        '-i',
-        sourcePath,
-        '-map',
-        '0',
-        '-c',
-        'copy',
-        '-avoid_negative_ts',
-        'make_zero',
-        '-n',
-        outputPath,
-      ],
-      timeoutMs: 0,
-      maxBufferBytes: 4 * 1024 * 1024,
-    });
+    const coreArgs = [
+      '-ss',
+      formatSeconds(segment.boundary.actualStartSeconds),
+      '-to',
+      formatSeconds(segment.boundary.actualEndSeconds),
+      '-i',
+      sourcePath,
+      '-map',
+      '0',
+      '-c',
+      'copy',
+      '-avoid_negative_ts',
+      'make_zero',
+      '-n',
+      outputPath,
+    ];
 
-    if (result.exitCode !== 0) {
+    const { exitCode, stderrTail } = await runFfmpegWithProgress(ffmpegPath, coreArgs, { onPulse });
+
+    if (exitCode !== 0) {
       throw new ServiceError(
         'CUT_EXPORT_FAILED',
         `ffmpeg could not export segment "${segment.label}" losslessly.`,
-        result.stderr || result.stdout || undefined,
+        stderrTail || undefined,
       );
     }
   }
@@ -343,16 +550,14 @@ export class FfmpegExportService {
     outputPath: string,
     sourceHasVideo: boolean,
     sourceExtension: string,
+    onPulse?: (pulse: { outTimeUs?: number; totalSizeBytes?: number; speed?: string }) => void,
   ): Promise<void> {
     const outputExtension = this.resolveExportExtension(sourceExtension, 're-encode', sourceHasVideo);
     if (sourceHasVideo && !supportedExactVideoExtensions.has(extname(outputPath).toLowerCase() || outputExtension)) {
       throw new ServiceError('EXACT_CONTAINER_UNSUPPORTED', 'Exact video exports currently support MP4, MOV, and MKV outputs.');
     }
 
-    const args = [
-      '-hide_banner',
-      '-loglevel',
-      'error',
+    const coreArgs = [
       '-ss',
       formatSeconds(segment.boundary.requestedStartSeconds),
       '-to',
@@ -369,18 +574,13 @@ export class FfmpegExportService {
       outputPath,
     ];
 
-    const result = await this.processRunner.run({
-      command: ffmpegPath,
-      args,
-      timeoutMs: 0,
-      maxBufferBytes: 4 * 1024 * 1024,
-    });
+    const { exitCode, stderrTail } = await runFfmpegWithProgress(ffmpegPath, coreArgs, { onPulse });
 
-    if (result.exitCode !== 0) {
+    if (exitCode !== 0) {
       throw new ServiceError(
         'EXACT_EXPORT_FAILED',
         `ffmpeg could not export segment "${segment.label}" with exact timestamps.`,
-        result.stderr || result.stdout || undefined,
+        stderrTail || undefined,
       );
     }
   }

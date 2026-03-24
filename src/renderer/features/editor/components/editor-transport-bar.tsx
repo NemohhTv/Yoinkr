@@ -2,83 +2,78 @@ import type { useEditorController } from '../use-editor-controller';
 
 type EditorController = ReturnType<typeof useEditorController>;
 
+/** Edit controls (left) + export mode + Export (right) — one compact row. */
 export const EditorTransportBar = ({ controller }: { controller: EditorController }): JSX.Element => {
   const {
     formatTimecode,
     currentTime,
+    selection,
     isPlaying,
-    isExporting,
-    exportMode,
-    outputDirectory,
-    exportFileName,
-    exportJob,
     togglePlayback,
     setInToCurrent,
     setOutToCurrent,
     addSegment,
+    isExporting,
+    exportMode,
+    exportJob,
     setExportMode,
-    setExportFileName,
-    pickExportDirectory,
     exportMedia,
     revealOutputPath,
-    setOutputDirectory,
   } = controller;
 
+  const canAddSegment = selection.outPointSeconds > selection.inPointSeconds + 0.001;
+
   return (
-    <div className="editor-bottom-bar">
+    <div className="editor-bottom-bar editor-bottom-bar--unified">
       <div className="editor-transport-left">
-        <button className="button secondary" onClick={() => void togglePlayback()}>
+        <button type="button" className="button secondary" onClick={() => void togglePlayback()}>
           {isPlaying ? '⏸ Pause' : '▶ Play'}
         </button>
-        <button className="button secondary" onClick={setInToCurrent} title="Set start (I)">Set start</button>
-        <button className="button secondary" onClick={setOutToCurrent} title="Set end (O)">Set end</button>
-        <button className="button" onClick={addSegment}>Add segment</button>
+        <button type="button" className="button secondary" onClick={setInToCurrent} title="Set start (I)">
+          Set start
+        </button>
+        <button type="button" className="button secondary" onClick={setOutToCurrent} title="Set end (O)">
+          Set end
+        </button>
+        <button
+          className="button"
+          type="button"
+          disabled={!canAddSegment}
+          title={
+            canAddSegment
+              ? 'Add the current in/out range as an export segment'
+              : 'Set start and end so end is after start (or wait for duration to load)'
+          }
+          onClick={addSegment}
+        >
+          Add segment
+        </button>
 
         <span className="editor-timecode">{formatTimecode(currentTime)}</span>
       </div>
 
-      <div className="editor-transport-right">
-        <input
-          type="text"
-          className="editor-filename-input"
-          value={exportFileName}
-          onChange={(event) => setExportFileName(event.target.value)}
-          placeholder="File name..."
-          title="Export file name"
-        />
-
-        <div className="editor-export-path" title={outputDirectory ?? 'No export folder set'}>
-          <input
-            type="text"
-            readOnly
-            value={outputDirectory ?? ''}
-            placeholder="Folder..."
-            onClick={() => void pickExportDirectory()}
-            onChange={(event) => setOutputDirectory(event.target.value)}
-          />
-          <button className="button secondary" onClick={() => void pickExportDirectory()}>Browse</button>
-        </div>
-
+      <div className="editor-toolbar-export-cluster">
         <select
           className="editor-export-mode-select"
           value={exportMode}
           onChange={(event) => setExportMode(event.target.value as typeof exportMode)}
+          title="Export layout"
         >
           <option value="separate-files">Separate files</option>
           <option value="merge-cuts">Merge cuts</option>
         </select>
-
         <button
-          className="button primary"
+          type="button"
+          className="button primary editor-export-submit"
           disabled={isExporting}
           onClick={() => void exportMedia()}
         >
-          {isExporting ? 'Exporting...' : 'Export'}
+          {isExporting ? 'Exporting…' : 'Export'}
         </button>
-
         {exportJob.status === 'complete' && exportJob.outputPaths[0] && (
           <button
-            className="button secondary"
+            type="button"
+            className="button secondary editor-export-reveal-btn"
             onClick={() => void revealOutputPath(exportJob.outputPaths[0])}
             title="Reveal exported file"
           >

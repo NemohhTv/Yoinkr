@@ -59,7 +59,15 @@ export class FfprobeAnalysisService {
     private readonly binaryResolver: BinaryResolver,
   ) {}
 
-  async inspectSource(sourcePath: string, settings: AppSettings): Promise<EditorMediaInfo> {
+  /**
+   * @param options.includeKeyframes - Full packet scan is slow on long files; use `true` only when exporting / planning cuts.
+   */
+  async inspectSource(
+    sourcePath: string,
+    settings: AppSettings,
+    options?: { includeKeyframes?: boolean },
+  ): Promise<EditorMediaInfo> {
+    const includeKeyframes = options?.includeKeyframes === true;
     const resolved = this.binaryResolver.resolveTool('ffprobe', settings);
     if (!resolved.resolvedPath || !resolved.exists) {
       throw new ServiceError('FFPROBE_NOT_FOUND', 'ffprobe was not found. Configure it in Settings before opening media in the editor.');
@@ -151,11 +159,29 @@ export class FfprobeAnalysisService {
       warnings.push('Multiple audio streams were detected. Phase 3 keeps the existing stream layout during export.');
     }
 
-    const keyframeResult = hasVideo && primaryVideoSelectorIndex !== null
-      ? await this.inspectKeyframes(sourcePath, resolved.resolvedPath, primaryVideoSelectorIndex)
-      : { keyframeTimes: [], status: hasVideo ? 'unavailable' as const : 'not-applicable' as const, message: hasVideo ? 'No primary video stream was selected for keyframe analysis.' : null };
-    if (hasVideo && keyframeResult.status !== 'available') {
-      warnings.push(keyframeResult.message ?? 'Keyframe-safe cut boundaries could not be determined for this file.');
+    let keyframeResult: {
+      keyframeTimes: number[];
+      status: EditorMediaInfo['keyframeAnalysisStatus'];
+      message: string | null;
+    };
+
+    if (!hasVideo || primaryVideoSelectorIndex === null) {
+      keyframeResult = {
+        keyframeTimes: [],
+        status: hasVideo ? 'unavailable' : 'not-applicable',
+        message: hasVideo ? 'No primary video stream was selected for keyframe analysis.' : null,
+      };
+    } else if (includeKeyframes) {
+      keyframeResult = await this.inspectKeyframes(sourcePath, resolved.resolvedPath, primaryVideoSelectorIndex);
+      if (keyframeResult.status !== 'available') {
+        warnings.push(keyframeResult.message ?? 'Keyframe-safe cut boundaries could not be determined for this file.');
+      }
+    } else {
+      keyframeResult = {
+        keyframeTimes: [],
+        status: 'unavailable',
+        message: 'Full keyframe scan skipped for a fast open — timeline scrubbing and segments still work.',
+      };
     }
 
     const chapters = (parsed.chapters ?? []).map<EditorMediaChapter>((chapter, index) => ({
@@ -228,8 +254,9 @@ export class FfprobeAnalysisService {
           'csv=p=0',
           sourcePath,
         ],
-        timeoutMs: 45000,
-        maxBufferBytes: 24 * 1024 * 1024,
+        // Long recordings + NAS paths can exceed 45s; export/open must not abort mid-scan.
+        timeoutMs: 0,
+        maxBufferBytes: 96 * 1024 * 1024,
       });
 
       if (result.exitCode !== 0) {

@@ -5,7 +5,7 @@ import type { AppContext } from '@main/services/app-context';
 import { ServiceError } from '@main/services/shared/service-error';
 import { findLatestOutputByDownloadId } from '@main/services/tools/download-output-resolver';
 import { ipcChannels } from '@shared/contracts/channels';
-import type { EditorExportRequest, EditorOpenRequest } from '@shared/types/editor';
+import type { EditorExportRequest, EditorOpenRequest, EditorExportProgressPayload } from '@shared/types/editor';
 
 import { fail, ok } from './result';
 
@@ -44,9 +44,20 @@ export const registerEditorIpc = (context: AppContext): void => {
       }
 
       context.editorFileService.assertSourceExists(normalizedRequest.sourcePath);
-      const mediaInfo = await context.ffprobeAnalysisService.inspectSource(normalizedRequest.sourcePath, settings);
-      const source = context.editorFileService.buildSourceSummary(normalizedRequest, mediaInfo);
-      return ok({ request: normalizedRequest, source, mediaInfo });
+      const mediaInfo = await context.ffprobeAnalysisService.inspectSource(normalizedRequest.sourcePath, settings, {
+        includeKeyframes: false,
+      });
+      const preview = await context.editorPreviewService.resolvePlaybackPath(normalizedRequest.sourcePath, mediaInfo, settings);
+      const source = context.editorFileService.buildSourceSummary(normalizedRequest, mediaInfo, {
+        previewSupported: preview.previewSupported,
+      });
+      return ok({
+        request: normalizedRequest,
+        source,
+        mediaInfo,
+        previewPlaybackPath: preview.playbackPath,
+        previewPlaybackNote: preview.note,
+      });
     } catch (error) {
       if (error instanceof ServiceError) {
         return fail(error.code, error.message, error.details);
@@ -59,7 +70,9 @@ export const registerEditorIpc = (context: AppContext): void => {
   ipcMain.handle(ipcChannels.editorGetTimelineAssets, async (_event, sourcePath: string) => {
     try {
       const settings = context.settingsService.getSettings();
-      const mediaInfo = await context.ffprobeAnalysisService.inspectSource(sourcePath, settings);
+      const mediaInfo = await context.ffprobeAnalysisService.inspectSource(sourcePath, settings, {
+        includeKeyframes: false,
+      });
       return ok(await context.timelineAssetsService.buildAssets(sourcePath, mediaInfo, settings));
     } catch (error) {
       if (error instanceof ServiceError) {
@@ -110,10 +123,17 @@ export const registerEditorIpc = (context: AppContext): void => {
     }
   });
 
-  ipcMain.handle(ipcChannels.editorExportMedia, async (_event, request: EditorExportRequest) => {
+  ipcMain.handle(ipcChannels.editorExportMedia, async (event, request: EditorExportRequest) => {
     try {
       const settings = context.settingsService.getSettings();
-      return ok(await context.ffmpegExportService.exportMedia(request, settings));
+      const result = await context.ffmpegExportService.exportMedia(request, settings, {
+        onProgress: (payload: EditorExportProgressPayload) => {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send(ipcChannels.editorExportProgress, payload);
+          }
+        },
+      });
+      return ok(result);
     } catch (error) {
       if (error instanceof ServiceError) {
         return fail(error.code, error.message, error.details);

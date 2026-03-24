@@ -75,60 +75,86 @@ export const EditorSegmentList = ({ controller }: { controller: EditorController
         <span className="muted">{segments.length}</span>
       </div>
 
-      <div className="editor-segments-scroll" ref={listRef}>
-        {segments.length === 0 ? (
-          <div className="editor-segments-empty">Use "Set start" and "Set end" then "Add segment" to begin.</div>
-        ) : (
-          segments.map((segment, index) => {
-            const duration = segment.requestedEndSeconds - segment.requestedStartSeconds;
-            const isActive = selectedSegmentId === segment.id;
-            const isBeingDragged = dragId === segment.id && isDragging.current;
-            const badgeColor = BADGE_COLORS[index % BADGE_COLORS.length];
-
-            return (
-              <div
-                key={segment.id}
-                className={`editor-segment-item${isActive ? ' active' : ''}${isBeingDragged ? ' dragging' : ''}`}
-                style={isBeingDragged ? { transform: `translateY(${dragOffsetY}px)`, zIndex: 10 } : undefined}
-                onPointerDown={(event) => onPointerDown(event, segment.id, index)}
-                onPointerMove={onPointerMove}
-                onPointerUp={onPointerUp}
-                onClick={() => onCardClick(segment.id)}
+      {segments.length === 0 ? (
+        <div className="editor-segments-body editor-segments-body--empty">
+          <div className="editor-segments-empty-spacer" aria-hidden />
+          <div className="editor-segments-empty-bottom">
+            <div className="editor-segments-empty">Use "Set start" and "Set end" then "Add segment" to begin.</div>
+            <div className="editor-segments-empty-actions">
+              <button
+                className="button secondary"
+                type="button"
+                disabled
+                title="Add at least one segment first"
               >
-                <span className="editor-segment-badge" style={{ backgroundColor: badgeColor }}>
-                  {index + 1}
-                </span>
-                <div className="editor-segment-info">
-                  <span className="editor-segment-range">
-                    {formatTimecode(segment.requestedStartSeconds)} – {formatTimecode(segment.requestedEndSeconds)}
-                  </span>
-                  <span className="editor-segment-duration">{duration.toFixed(1)}s</span>
-                </div>
-                <button
-                  className="editor-segment-remove"
-                  title="Remove segment"
-                  onClick={(event) => { event.stopPropagation(); removeSegment(segment.id); }}
-                >
-                  ✕
-                </button>
-              </div>
-            );
-          })
-        )}
-      </div>
+                Play Segments
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="editor-segments-scroll" ref={listRef}>
+            {segments.map((segment, index) => {
+              const duration = segment.requestedEndSeconds - segment.requestedStartSeconds;
+              const isActive = selectedSegmentId === segment.id;
+              const isBeingDragged = dragId === segment.id && isDragging.current;
+              const badgeColor = BADGE_COLORS[index % BADGE_COLORS.length];
 
-      <div className="editor-segments-footer">
-        <button
-          className="button secondary"
-          disabled={segments.length === 0}
-          onClick={() => void playSegmentsInOrder()}
-        >
-          Play segments in order
-        </button>
-        {segments.length > 0 && (
-          <span className="muted">Total: {formatTimecode(segmentsTotalDuration)}</span>
-        )}
-      </div>
+              return (
+                <div
+                  key={segment.id}
+                  className={`editor-segment-item${isActive ? ' active' : ''}${isBeingDragged ? ' dragging' : ''}`}
+                  style={isBeingDragged ? { transform: `translateY(${dragOffsetY}px)`, zIndex: 10 } : undefined}
+                  onPointerDown={(event) => onPointerDown(event, segment.id, index)}
+                  onPointerMove={onPointerMove}
+                  onPointerUp={onPointerUp}
+                  onClick={() => onCardClick(segment.id)}
+                >
+                  <span className="editor-segment-badge" style={{ backgroundColor: badgeColor }}>
+                    {index + 1}
+                  </span>
+                  <div className="editor-segment-info">
+                    {segment.label.trim() && (
+                      <span className="editor-segment-label" title={segment.label}>
+                        {segment.label}
+                      </span>
+                    )}
+                    <span className="editor-segment-range">
+                      {formatTimecode(segment.requestedStartSeconds)} – {formatTimecode(segment.requestedEndSeconds)}
+                    </span>
+                    <span className="editor-segment-duration">{duration.toFixed(1)}s</span>
+                  </div>
+                  <button
+                    className="editor-segment-remove"
+                    title="Remove segment"
+                    onClick={(event) => { event.stopPropagation(); removeSegment(segment.id); }}
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="editor-segments-footer">
+            <div className="editor-segments-footer-stack">
+              <button
+                className="button secondary"
+                type="button"
+                disabled={segments.length === 0}
+                title="Play all segments from top to bottom"
+                onClick={() => void playSegmentsInOrder()}
+              >
+                Play Segments
+              </button>
+              <span className="editor-segments-total muted">
+                Total: {formatTimecode(segmentsTotalDuration)}
+              </span>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 };

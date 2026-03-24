@@ -1,7 +1,7 @@
 {
   "name": "yoinkr",
   "productName": "Yoinkr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Windows-first desktop media workflow app for download-to-edit pipelines.",
   "main": "out/main/index.js",
   "author": "Cursor",
@@ -62,6 +62,10 @@
       "package.json"
     ],
     "asar": true,
+    "asarUnpack": [
+      "**/*.node",
+      "**/node_modules/better-sqlite3/**"
+    ],
     "afterPack": "scripts/after-pack.cjs",
     "win": {
       "icon": "build/icon.ico",

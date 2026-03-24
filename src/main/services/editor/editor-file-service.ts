@@ -92,7 +92,11 @@ export class EditorFileService {
     }
   }
 
-  buildSourceSummary(request: EditorOpenRequest, mediaInfo: EditorMediaInfo): EditorSourceSummary {
+  buildSourceSummary(
+    request: EditorOpenRequest,
+    mediaInfo: EditorMediaInfo,
+    options?: { previewSupported?: boolean },
+  ): EditorSourceSummary {
     const normalizedRequest = this.normalizeOpenRequest(request);
     this.assertSourceExists(normalizedRequest.sourcePath);
 
@@ -112,7 +116,7 @@ export class EditorFileService {
       durationSeconds: mediaInfo.durationSeconds,
       hasVideo: mediaInfo.hasVideo,
       hasAudio: mediaInfo.hasAudio,
-      previewSupported: playablePreviewExtensions.has(extension),
+      previewSupported: options?.previewSupported ?? playablePreviewExtensions.has(extension),
       canEditLosslessly: mediaInfo.streamCopySupported,
       isMissing: false,
       warnings: [...mediaInfo.warnings],

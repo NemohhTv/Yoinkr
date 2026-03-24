@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import type {
   AudioPreference,
@@ -180,7 +181,12 @@ const getActiveValidation = (
   ?? validation.find((entry) => entry.isValid)
   ?? null;
 
+const POST_DOWNLOAD_ACTIVITY_MS = 15_000;
+
 export const useDownloaderController = () => {
+  const location = useLocation();
+  const postDownloadActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const [form, setForm] = useState<DownloaderFormState>(initialForm);
   const [validation, setValidation] = useState<DownloadUrlValidation[]>([]);
   const [activeValidationUrl, setActiveValidationUrl] = useState<string | null>(null);
@@ -194,6 +200,28 @@ export const useDownloaderController = () => {
     () => getActiveValidation(validation, activeValidationUrl),
     [validation, activeValidationUrl],
   );
+
+  const clearPostDownloadActivityTimer = useCallback((): void => {
+    if (postDownloadActivityTimeoutRef.current) {
+      clearTimeout(postDownloadActivityTimeoutRef.current);
+      postDownloadActivityTimeoutRef.current = null;
+    }
+  }, []);
+
+  /** Clears URL validation pills, live metadata preview, and toasts (queue items unchanged). */
+  const clearTransientFetchUi = useCallback((): void => {
+    setActivityMessage(null);
+    setValidation([]);
+    setActiveValidationUrl(null);
+    setMetadata(null);
+  }, []);
+
+  useEffect(() => {
+    if (location.pathname !== '/downloader') {
+      clearPostDownloadActivityTimer();
+      clearTransientFetchUi();
+    }
+  }, [location.pathname, clearPostDownloadActivityTimer, clearTransientFetchUi]);
 
   const queueSummary = useMemo(() => {
     const total = queueItems.length;
@@ -271,9 +299,23 @@ export const useDownloaderController = () => {
     }
   };
 
-  const inspectUrl = async (preferredUrl?: string): Promise<DownloadMetadata | null> => {
-    const nextValidation = validation.length > 0 ? validation : await validateUrls();
-    const nextActive = getActiveValidation(nextValidation, preferredUrl ?? activeValidationUrl);
+  /**
+   * @param validationSnapshot - Pass the array returned from `validateUrls()` when enqueueing so we
+   *   don't read stale `validation` state (React hasn't re-rendered yet → wrong video metadata).
+   */
+  const inspectUrl = async (
+    preferredUrl?: string,
+    validationSnapshot?: DownloadUrlValidation[],
+  ): Promise<DownloadMetadata | null> => {
+    let nextValidation =
+      validationSnapshot ?? (validation.length > 0 ? validation : await validateUrls());
+    let nextActive = getActiveValidation(nextValidation, preferredUrl ?? activeValidationUrl);
+
+    // Belt-and-suspenders: if caller passed a URL but state/snapshot didn't contain it, refresh once.
+    if (preferredUrl && nextActive?.normalizedUrl !== preferredUrl) {
+      nextValidation = await validateUrls();
+      nextActive = getActiveValidation(nextValidation, preferredUrl);
+    }
 
     if (!nextActive) {
       setMetadata(null);
@@ -306,7 +348,7 @@ export const useDownloaderController = () => {
       return;
     }
 
-    const nextMetadata = await inspectUrl(nextActive.normalizedUrl);
+    const nextMetadata = await inspectUrl(nextActive.normalizedUrl, nextValidation);
 
     try {
       setError(null);
@@ -519,7 +561,15 @@ export const useDownloaderController = () => {
       );
 
       if (result.success) {
+        setValidation([]);
+        setActiveValidationUrl(null);
+        setMetadata(null);
         setActivityMessage(`Downloaded: ${item.title}`);
+        clearPostDownloadActivityTimer();
+        postDownloadActivityTimeoutRef.current = setTimeout(() => {
+          setActivityMessage(null);
+          postDownloadActivityTimeoutRef.current = null;
+        }, POST_DOWNLOAD_ACTIVITY_MS);
         const historyRecord: DownloadHistoryRecord = {
           id: item.id,
           title: item.title,
@@ -547,7 +597,7 @@ export const useDownloaderController = () => {
         ),
       );
     }
-  }, [queueItems]);
+  }, [queueItems, clearPostDownloadActivityTimer]);
 
   const cancelItem = useCallback(async (id: string): Promise<void> => {
     try {

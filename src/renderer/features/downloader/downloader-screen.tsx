@@ -78,8 +78,13 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
           <div className="dl-item-empty">
             {isLoadingMetadata
               ? 'Fetching metadata...'
-              : <>Enter a URL above and click <strong>Add</strong> to start downloading.</>
-            }
+              : (
+                <>
+                  Enter a URL above, then click{' '}
+                  <strong>Add</strong>
+                  {' '}to start downloading.
+                </>
+              )}
           </div>
         ) : (
           queueItems.map((item) => {

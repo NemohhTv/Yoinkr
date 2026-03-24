@@ -11,9 +11,11 @@
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(circle at top, rgba(79, 70, 229, 0.16), transparent 30%),
     #0b0f17;
@@ -32,20 +34,24 @@ button {
 }
 
 #root {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .app-loading {
-  min-height: 100vh;
+  height: 100%;
   display: grid;
   place-items: center;
   color: #d1d5db;
 }
 
 .app-shell {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 0;
 }
 
@@ -82,6 +88,8 @@ button {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .button-row,
@@ -96,6 +104,8 @@ button {
 .main-content {
   flex: 1;
   min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 12px 16px;
@@ -389,12 +399,6 @@ button {
   border-radius: 14px;
   border: 1px dashed rgba(148, 163, 184, 0.22);
   color: #94a3b8;
-}
-
-.downloader-page,
-.editor-page {
-  display: flex;
-  flex-direction: column;
 }
 
 .ovd-layout {
@@ -781,36 +785,237 @@ button {
 }
 
 /* ═══════════════════════════════════════════════
-   Editor — Page layout (3 rows)
+   Editor — Page + responsive workspace grid
    ═══════════════════════════════════════════════ */
 
 .editor-page {
+  --editor-gap: clamp(8px, 1.4vw, 14px);
+  --editor-card-pad: clamp(8px, 1.3vw, 12px);
   display: flex;
   flex-direction: column;
+  flex: 1;
   height: 100%;
   min-height: 0;
   gap: 0;
 }
 
-.editor-top-row {
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 0;
+/* Main column grows; segments capped so preview + output row get more width */
+.editor-workspace {
   flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, min(24vw, 270px));
+  gap: var(--editor-gap);
+  align-items: stretch;
+  width: 100%;
+}
+
+.editor-workspace-main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-workspace-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--editor-gap);
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.editor-workspace-side {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Shared card shell */
+.editor-card {
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.78);
+  padding: var(--editor-card-pad);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.editor-card--media {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
   min-height: 0;
 }
 
-.editor-timeline-row {
-  flex-shrink: 0;
-  padding: 0 4px;
+.editor-card--media .editor-source-bar {
+  border-radius: 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
 }
 
-.editor-transport-row {
+/* Scales down on short/narrow windows so video stays inside the black frame */
+.editor-preview-stage {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: max(72px, min(30dvh, 42vw));
+  max-height: min(78dvh, 920px);
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  overflow: hidden;
+}
+
+.editor-preview-stage .editor-player-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+}
+
+.editor-card--timeline {
+  padding: var(--editor-card-pad);
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.editor-card--toolbar {
+  padding: 4px 8px;
+}
+
+.editor-card--toolbar .editor-bottom-bar {
+  margin: 0;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.35);
+  gap: 8px 10px;
+}
+
+/* Compact edit + export row — more room for preview */
+.editor-card--toolbar .editor-bottom-bar--unified .button {
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 0.78rem;
+}
+
+.editor-card--toolbar .editor-bottom-bar--unified .editor-timecode {
+  font-size: 0.8rem;
+  min-width: 100px;
+}
+
+/* Output name | output folder — one row, two columns */
+.editor-output-split-wrap {
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(2, 6, 23, 0.22);
+  padding: clamp(5px, 0.85vw, 8px) clamp(8px, 1.1vw, 11px);
+  min-width: 0;
+}
+
+.editor-output-split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(10px, 1.8vw, 18px);
+  align-items: start;
+  min-width: 0;
+  justify-items: stretch;
+}
+
+.editor-output-split-col {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-output-row-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 4px;
+  line-height: 1.2;
+}
+
+.editor-output-name-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.editor-output-name-input {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  background: rgba(2, 6, 23, 0.55);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 0.82rem;
+}
+
+.editor-output-ext {
   flex-shrink: 0;
+  font-family: ui-monospace, 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.8rem;
+  color: #64748b;
+  user-select: none;
+}
+
+/* Path fills the left; Folder button sits on the far right of this column */
+.editor-output-folder-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.editor-output-folder-path {
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  font-size: 0.78rem;
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-output-folder-btn {
+  min-height: 34px;
+  min-width: 76px;
+  padding: 4px 12px;
+  font-size: 0.78rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: end;
+}
+
+.editor-output-folder-btn.is-set {
+  border-color: rgba(52, 211, 153, 0.35);
+  color: #a7f3d0;
 }
 
 /* ═══════════════════════════════════════════════
-   Editor — Player panel (left of top row)
+   Editor — Player / preview
    ═══════════════════════════════════════════════ */
 
 .editor-player-panel {
@@ -819,14 +1024,20 @@ button {
   justify-content: center;
   background: #000;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   overflow: hidden;
   flex: 1;
 }
 
 .editor-preview-video {
+  display: block;
   width: 100%;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center;
   background: #000;
   border: none;
   border-radius: 0;
@@ -853,17 +1064,27 @@ button {
 .editor-segments-panel {
   display: flex;
   flex-direction: column;
-  background: rgba(15, 23, 42, 0.92);
-  border-left: 1px solid rgba(148, 163, 184, 0.12);
+  flex: 1;
+  background: transparent;
+  border: none;
   min-height: 0;
+}
+
+.editor-workspace-side .editor-segments-panel {
+  flex: 1;
+  min-height: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(15, 23, 42, 0.78);
 }
 
 .editor-segments-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px;
+  padding: clamp(8px, 1.2vw, 12px) clamp(10px, 1.4vw, 14px);
   border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  flex-shrink: 0;
 }
 
 .editor-segments-title {
@@ -874,6 +1095,7 @@ button {
 
 .editor-segments-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 6px 8px;
   display: flex;
@@ -881,11 +1103,43 @@ button {
   gap: 4px;
 }
 
+/* Empty state: list area fills column; hint + Play segments sit near bottom above export bar */
+.editor-segments-body--empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.editor-segments-empty-spacer {
+  flex: 1;
+  min-height: 8px;
+}
+
+.editor-segments-empty-bottom {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.editor-segments-empty-actions {
+  flex-shrink: 0;
+}
+
+.editor-segments-empty-actions .button {
+  width: 100%;
+}
+
 .editor-segments-empty {
   color: #64748b;
   font-size: 0.84rem;
   text-align: center;
-  padding: 28px 14px;
+  padding: 0 6px;
+  margin: 0;
 }
 
 .editor-segment-item {
@@ -940,6 +1194,17 @@ button {
   min-width: 0;
 }
 
+.editor-segment-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
 .editor-segment-range {
   font-size: 0.82rem;
   color: #cbd5e1;
@@ -976,15 +1241,34 @@ button {
 
 .editor-segments-footer {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: center;
   padding: 8px 10px;
   border-top: 1px solid rgba(148, 163, 184, 0.1);
+  flex-shrink: 0;
+}
+
+.editor-segments-footer-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.editor-segments-footer-stack .button {
+  width: 100%;
+}
+
+.editor-segments-total {
+  display: block;
+  font-size: 0.76rem;
+  text-align: center;
+  line-height: 1.3;
 }
 
 /* ═══════════════════════════════════════════════
-   Editor — Timeline track (middle row)
+   Editor — Timeline track (under video)
    ═══════════════════════════════════════════════ */
 
 .editor-timeline-track {
@@ -1070,11 +1354,24 @@ button {
   position: absolute;
   top: 0;
   bottom: 0;
+  width: 14px;
+  margin-left: -7px;
+  background: transparent;
+  pointer-events: auto;
+  cursor: ew-resize;
+  z-index: 3;
+}
+
+.editor-timeline-playhead::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
   width: 2px;
+  margin-left: -1px;
   background: #f8fafc;
   box-shadow: 0 0 6px rgba(248, 250, 252, 0.4);
-  pointer-events: none;
-  z-index: 3;
 }
 
 /* ═══════════════════════════════════════════════
@@ -1085,17 +1382,69 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
+  gap: 12px 16px;
+  padding: 10px 12px;
   background: rgba(15, 23, 42, 0.92);
   border-top: 1px solid rgba(148, 163, 184, 0.1);
+  flex-wrap: wrap;
+}
+
+.editor-bottom-bar--unified {
+  justify-content: space-between;
+  align-items: center;
 }
 
 .editor-transport-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Mode dropdown immediately left of Export — keep on one line */
+.editor-toolbar-export-cluster {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.editor-toolbar-export-cluster .editor-export-mode-select {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 118px;
+  max-width: min(200px, 38vw);
+  min-height: 30px;
+  box-sizing: border-box;
+  background: rgba(2, 6, 23, 0.5);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.76rem;
+  cursor: pointer;
+}
+
+.editor-toolbar-export-cluster .editor-export-submit {
+  min-height: 30px;
+  min-width: 84px;
+  padding: 4px 14px;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+.editor-toolbar-export-cluster .editor-export-reveal-btn {
+  min-height: 30px;
+  min-width: 36px;
+  padding: 4px 8px;
+  flex-shrink: 0;
+  box-sizing: border-box;
 }
 
 .editor-timecode {
@@ -1103,54 +1452,7 @@ button {
   font-size: 0.88rem;
   color: #bfdbfe;
   min-width: 110px;
-}
-
-.editor-transport-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.editor-filename-input {
-  width: 160px;
-  background: rgba(2, 6, 23, 0.6);
-  color: #e2e8f0;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.82rem;
-}
-
-.editor-filename-input::placeholder {
-  color: #64748b;
-}
-
-.editor-export-path {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.editor-export-path input {
-  width: 140px;
-  background: rgba(2, 6, 23, 0.6);
-  color: #94a3b8;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.82rem;
-  cursor: pointer;
-}
-
-.editor-export-mode-select {
-  background: rgba(2, 6, 23, 0.65);
-  color: #e2e8f0;
-  border: 1px solid rgba(148, 163, 184, 0.18);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.82rem;
-  cursor: pointer;
+  flex-shrink: 0;
 }
 
 /* ═══════════════════════════════════════════════
@@ -1172,15 +1474,21 @@ button {
   background: rgba(15, 23, 42, 0.88);
   border-bottom: 1px solid rgba(148, 163, 184, 0.08);
   flex-shrink: 0;
+  min-width: 0;
+}
+
+.editor-source-name-wrap {
+  flex: 1;
+  min-width: 0;
 }
 
 .editor-source-name {
   font-size: 0.82rem;
   color: #94a3b8;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  min-width: 0;
 }
 
 .editor-new-edit-btn {
@@ -1311,6 +1619,7 @@ p {
 .dl-page {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 0;
   height: 100%;
   min-height: 0;
@@ -1819,9 +2128,21 @@ p {
    Media Queries
    ═══════════════════════════════════════════════ */
 
+@media (max-width: 1200px) {
+  .main-content {
+    padding: 10px 12px;
+  }
+
+  .editor-page {
+    --editor-gap: clamp(6px, 1.2vw, 11px);
+    --editor-card-pad: clamp(6px, 1.1vw, 11px);
+  }
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .sidebar {
@@ -1845,19 +2166,19 @@ p {
     grid-template-columns: 1fr;
   }
 
-  .editor-top-row {
-    grid-template-columns: 1fr;
-  }
-
-  .editor-segments-panel {
-    border-left: none;
-    border-top: 1px solid rgba(148, 163, 184, 0.12);
-    max-height: 220px;
-  }
-
   .editor-bottom-bar {
-    flex-direction: column;
-    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .editor-toolbar-export-cluster .editor-export-mode-select {
+    flex: 1 1 140px;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .editor-toolbar-export-cluster .editor-export-submit {
+    flex: 1;
+    min-width: 96px;
   }
 
   .dl-item-row {
@@ -1871,5 +2192,97 @@ p {
 
   .dl-bottom-bar {
     flex-wrap: wrap;
+  }
+}
+
+@media (max-height: 700px) {
+  .editor-preview-stage {
+    min-height: max(64px, min(24dvh, 36vw));
+    max-height: min(65dvh, 720px);
+  }
+}
+
+@media (max-width: 720px) {
+  .editor-output-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .editor-output-folder-field {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-output-folder-btn {
+    justify-self: stretch;
+    width: 100%;
+  }
+}
+
+/* Editor: stack segments under primary workspace */
+@media (max-width: 960px) {
+  .editor-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-workspace-side .editor-segments-panel {
+    max-height: min(46vh, 440px);
+    min-height: min(200px, 28vh);
+    flex: 0 1 auto;
+    border-top: 1px solid rgba(148, 163, 184, 0.12);
+  }
+
+  .editor-segments-body--empty .editor-segments-empty-spacer {
+    flex: 0;
+    min-height: 4px;
+  }
+
+  .editor-segments-empty-bottom {
+    border-top: none;
+    padding-top: 8px;
+  }
+}
+
+@media (max-width: 600px) {
+  .editor-source-bar {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    row-gap: 6px;
+  }
+
+  .editor-source-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .editor-transport-left .editor-timecode {
+    flex-basis: 100%;
+    min-width: 0;
+    margin-top: 2px;
+  }
+
+  .editor-bottom-bar--unified {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .editor-toolbar-export-cluster {
+    width: 100%;
+    justify-content: flex-start;
+    padding-top: 8px;
+    border-top: 1px solid rgba(148, 163, 184, 0.08);
+  }
+
+  .editor-toolbar-export-cluster .editor-export-mode-select {
+    flex: 1 1 140px;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .editor-toolbar-export-cluster .editor-export-submit,
+  .editor-toolbar-export-cluster .editor-export-reveal-btn {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 }

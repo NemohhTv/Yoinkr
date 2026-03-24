@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { dirname, extname, join } from 'node:path';
 
 import type { AppPathsService } from '@main/services/paths/app-paths-service';
 import { ServiceError } from '@main/services/shared/service-error';
@@ -11,6 +11,19 @@ import type { ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } fr
 import type { AppSettings } from '@shared/types/settings';
 
 type ProgressCallback = (progress: ItemDownloadProgress) => void;
+
+/** Safe base name for final on-disk title (yt-dlp still writes `id__…` first for reliable lookup). */
+const sanitizeDownloadDisplayName = (name: string): string => {
+  const trimmed = name.trim();
+  const withoutInvalidChars = Array.from(trimmed)
+    .map((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 31 || '<>:"/\\|?*'.includes(character) ? '_' : character;
+    })
+    .join('');
+  const collapsed = withoutInvalidChars.replace(/\s+/g, ' ').trim();
+  return collapsed.slice(0, 180) || 'Video';
+};
 
 const PROGRESS_RE = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+~?\s*\S+\s+at\s+(.+?)\s+ETA\s+(\S+)/;
 const MERGE_RE = /\[Merger\]|\[Mux\]|\[FixupM|\[VideoRemuxer\]/;
@@ -203,6 +216,9 @@ export class YtDlpDownloadService {
           if (!finalPath || !existsSync(finalPath)) {
             finalPath = findLatestOutputByDownloadId(downloadDir, request.id);
           }
+          if (finalPath && existsSync(finalPath)) {
+            finalPath = this.renameToFriendlyTitle(finalPath, request);
+          }
           onProgress({
             id: request.id,
             phase: 'complete',
@@ -349,6 +365,31 @@ export class YtDlpDownloadService {
   private mapAudioFormat(format: string): string {
     const map: Record<string, string> = { mp3: 'mp3', m4a: 'm4a', wav: 'wav', flac: 'flac' };
     return map[format] ?? 'mp3';
+  }
+
+  /**
+   * After yt-dlp writes `<uuid>__title.ext`, rename to `Title.ext` (or `Title (2).ext`) so Explorer
+   * and the editor show human-readable names. Internal prefix template stays for path fallback.
+   */
+  private renameToFriendlyTitle(finalPath: string, request: ItemDownloadRequest): string {
+    const ext = extname(finalPath);
+    const dir = dirname(finalPath);
+    const base = sanitizeDownloadDisplayName(request.title);
+    let candidate = join(dir, `${base}${ext}`);
+    let counter = 1;
+    while (existsSync(candidate) && candidate !== finalPath) {
+      candidate = join(dir, `${base} (${counter})${ext}`);
+      counter += 1;
+    }
+    if (candidate === finalPath) {
+      return finalPath;
+    }
+    try {
+      renameSync(finalPath, candidate);
+      return candidate;
+    } catch {
+      return finalPath;
+    }
   }
 
   private extractErrorMessage(stderr: string): string {

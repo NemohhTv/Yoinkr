@@ -20,6 +20,7 @@ import { FfprobeAnalysisService } from './editor/ffprobe-analysis-service';
 import { FfmpegExportService } from './editor/ffmpeg-export-service';
 import { ExportPlanningService } from './editor/export-planning-service';
 import { TimelineAssetsService } from './editor/timeline-assets-service';
+import { EditorPreviewService } from './editor/editor-preview-service';
 
 export interface AppContext {
   logger: typeof logger;
@@ -33,6 +34,7 @@ export interface AppContext {
   exportPlanningService: ExportPlanningService;
   timelineAssetsService: TimelineAssetsService;
   ffmpegExportService: FfmpegExportService;
+  editorPreviewService: EditorPreviewService;
   mediaToolFacade: MediaToolFacade;
   toolDownloadService: ToolDownloadService;
   ytDlpDownloadService: YtDlpDownloadService;
@@ -54,13 +56,8 @@ export const createAppContext = (): AppContext => {
   const ffprobeAnalysisService = new FfprobeAnalysisService(processRunner, binaryResolver);
   const exportPlanningService = new ExportPlanningService(ffprobeAnalysisService);
   const timelineAssetsService = new TimelineAssetsService(pathsService, processRunner, binaryResolver);
-  const ffmpegExportService = new FfmpegExportService(
-    pathsService,
-    processRunner,
-    binaryResolver,
-    ffprobeAnalysisService,
-    exportPlanningService,
-  );
+  const ffmpegExportService = new FfmpegExportService(pathsService, binaryResolver, ffprobeAnalysisService, exportPlanningService);
+  const editorPreviewService = new EditorPreviewService(pathsService, binaryResolver);
   const ytDlpService = new YtDlpMetadataService(processRunner, binaryResolver, metadataCache, pathsService);
   const toolStatusService = new ToolStatusService(processRunner, binaryResolver);
   const mediaToolFacade = new MediaToolFacade(ytDlpService, toolStatusService, settingsService, toolPathRepository);
@@ -79,6 +76,7 @@ export const createAppContext = (): AppContext => {
     exportPlanningService,
     timelineAssetsService,
     ffmpegExportService,
+    editorPreviewService,
     mediaToolFacade,
     toolDownloadService,
     ytDlpDownloadService,

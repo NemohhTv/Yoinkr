@@ -1,7 +1,15 @@
 import type { DiagnosticsInfo } from '@shared/types/app';
 import type { BootstrapState } from '@shared/types/app';
 import type { DownloadDraft, DownloadMetadata, DownloadUrlValidation, ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult, DownloadHistoryRecord } from '@shared/types/downloader';
-import type { EditorExportPreview, EditorExportRequest, EditorExportResult, EditorOpenRequest, EditorOpenResult, EditorTimelineAssets } from '@shared/types/editor';
+import type {
+  EditorExportPreview,
+  EditorExportProgressPayload,
+  EditorExportRequest,
+  EditorExportResult,
+  EditorOpenRequest,
+  EditorOpenResult,
+  EditorTimelineAssets,
+} from '@shared/types/editor';
 import type { Result, BinaryStatus, DownloadableToolName, ToolDownloadProgress, ToolDownloadResult } from '@shared/types/common';
 import type { AppSettings, SettingsPatch } from '@shared/types/settings';
 
@@ -32,12 +40,16 @@ export interface YoinkrApi {
   };
   editor: {
     openSource(request: EditorOpenRequest): Promise<Result<EditorOpenResult>>;
+    onPreviewProxyReady(
+      callback: (payload: { sourcePath: string; playbackPath: string }) => void,
+    ): () => void;
     getTimelineAssets(sourcePath: string): Promise<Result<EditorTimelineAssets>>;
     previewExport(request: EditorExportRequest): Promise<Result<EditorExportPreview>>;
     pickSourceFile(): Promise<Result<string | null>>;
     pickExportDirectory(): Promise<Result<string | null>>;
     pickExportFile(suggestedName: string): Promise<Result<string | null>>;
     exportMedia(request: EditorExportRequest): Promise<Result<EditorExportResult>>;
+    onExportProgress(callback: (payload: EditorExportProgressPayload) => void): () => void;
   };
   tools: {
     getBinaryStatus(): Promise<Result<BinaryStatus[]>>;

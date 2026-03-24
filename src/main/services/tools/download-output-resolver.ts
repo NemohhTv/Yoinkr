@@ -4,6 +4,7 @@ import { join } from 'node:path';
 /**
  * Downloads use `-o <dir>/<downloadId>__%(title)...` so we can find the real file on disk
  * even when stdout path parsing fails (Unicode, merges, or odd yt-dlp output).
+ * After success, the file may be renamed to a friendly `Title.ext` (see YtDlpDownloadService).
  */
 export function findLatestOutputByDownloadId(downloadDir: string, downloadId: string): string | null {
   if (!downloadId || !existsSync(downloadDir)) {

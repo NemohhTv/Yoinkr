@@ -6,6 +6,7 @@ import type {
   EditorCutMode,
   EditorExportMode,
   EditorExportPreview,
+  EditorExportProgressPayload,
   EditorOpenRequest,
   EditorOpenResult,
   EditorSegment,
@@ -31,10 +32,24 @@ const createSegmentId = (): string =>
     ? crypto.randomUUID()
     : `segment-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+/** Packaged app (file:// UI): same as 0.1.0 — local video often decodes better (e.g. some HEVC paths). */
 const toFileUrl = (filePath: string): string => {
   const normalized = filePath.replace(/\\/g, '/');
   const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`;
   return encodeURI(`file://${prefixed}`);
+};
+
+/**
+ * Custom protocol registered in main — avoids file:// blocked from http://localhost (dev) with webSecurity.
+ */
+const toPreviewMediaUrl = (filePath: string): string =>
+  `yoinkr-media://preview/?path=${encodeURIComponent(filePath)}`;
+
+const toEditorPreviewUrl = (absolutePath: string): string => {
+  if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
+    return toFileUrl(absolutePath);
+  }
+  return toPreviewMediaUrl(absolutePath);
 };
 
 const buildMergedFileName = (sourcePath: string): string => {
@@ -55,6 +70,27 @@ const buildSingleCutFileName = (sourcePath: string): string => {
     return `${fileName}_cut`;
   }
   return `${fileName.slice(0, extensionIndex)}_cut${fileName.slice(extensionIndex)}`;
+};
+
+/** Split a full output filename into editable stem + preserved extension (includes leading dot). */
+const splitOutputFileName = (full: string): { stem: string; ext: string } => {
+  const t = full.trim();
+  if (!t) {
+    return { stem: '', ext: '' };
+  }
+  const i = t.lastIndexOf('.');
+  if (i <= 0 || i === t.length - 1) {
+    return { stem: t, ext: '' };
+  }
+  return { stem: t.slice(0, i), ext: t.slice(i) };
+};
+
+const composeOutputFileName = (stem: string, ext: string): string => {
+  const s = stem.trim();
+  if (!s) {
+    return '';
+  }
+  return s + ext;
 };
 
 const isEditableElement = (target: EventTarget | null): boolean => {
@@ -84,6 +120,54 @@ const findNextKeyframe = (keyframeTimes: number[], targetSeconds: number): numbe
 
 export { formatTimecode };
 
+const formatExportProgressBytes = (bytes: number): string => {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(0)} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+};
+
+const formatExportDurationShort = (sec: number): string => {
+  if (!Number.isFinite(sec) || sec < 0) {
+    return '0:00';
+  }
+  const whole = Math.floor(sec);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${m}:${String(s).padStart(2, '0')}`;
+};
+
+const formatExportProgressLine = (p: EditorExportProgressPayload): string => {
+  if (p.phase === 'starting') {
+    return p.stepLabel;
+  }
+  const parts: string[] = [`Step ${p.stepIndex}/${p.stepCount}: ${p.stepLabel}`];
+  if (p.segmentDurationSeconds && p.segmentDurationSeconds > 0 && p.outTimeUs != null && p.outTimeUs >= 0) {
+    const doneSec = p.outTimeUs / 1_000_000;
+    const pct = Math.min(100, Math.round((doneSec / p.segmentDurationSeconds) * 100));
+    parts.push(
+      `Output ~${formatExportDurationShort(doneSec)} / ${formatExportDurationShort(p.segmentDurationSeconds)} (${pct}%)`,
+    );
+  }
+  if (p.totalSizeBytes && p.totalSizeBytes > 1024) {
+    parts.push(`${formatExportProgressBytes(p.totalSizeBytes)} written`);
+  }
+  if (p.speed) {
+    parts.push(p.speed);
+  }
+  return parts.join(' · ');
+};
+
 export const useEditorController = () => {
   const location = useLocation();
   const previewRef = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
@@ -100,7 +184,12 @@ export const useEditorController = () => {
   const [exportMode, setExportMode] = useState<EditorExportMode>('separate-files');
   const [outputDirectory, setOutputDirectory] = useState<string | null>(null);
   const [outputFilePath, setOutputFilePath] = useState<string | null>(null);
-  const [exportFileName, setExportFileName] = useState('');
+  const [exportName, setExportName] = useState<{ stem: string; ext: string }>({ stem: '', ext: '' });
+
+  const exportFileName = useMemo(
+    () => composeOutputFileName(exportName.stem, exportName.ext),
+    [exportName.stem, exportName.ext],
+  );
   const [currentTime, setCurrentTime] = useState(0);
   const [previewDuration, setPreviewDuration] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -114,11 +203,17 @@ export const useEditorController = () => {
   const [exportJob, setExportJob] = useState<{
     status: 'idle' | 'exporting' | 'complete' | 'error';
     message: string | null;
+    strategyHeadline: string | null;
+    strategyHint: string | null;
     outputPaths: string[];
-  }>({ status: 'idle', message: null, outputPaths: [] });
+  }>({ status: 'idle', message: null, strategyHeadline: null, strategyHint: null, outputPaths: [] });
+
+  const exportProgressUnsubRef = useRef<(() => void) | null>(null);
 
   const sourceDuration = openResult?.mediaInfo.durationSeconds ?? previewDuration ?? 0;
-  const previewUrl = openResult ? toFileUrl(openResult.source.sourcePath) : null;
+  const previewUrl = openResult
+    ? toEditorPreviewUrl(openResult.previewPlaybackPath ?? openResult.source.sourcePath)
+    : null;
   const isAudioOnly = Boolean(openResult?.source.hasAudio && !openResult?.source.hasVideo);
   const keyframeTimes = useMemo(() => openResult?.mediaInfo.keyframeTimes ?? [], [openResult?.mediaInfo.keyframeTimes]);
 
@@ -132,13 +227,13 @@ export const useEditorController = () => {
     setExportMode('separate-files');
     setOutputDirectory(null);
     setOutputFilePath(null);
-    setExportFileName(buildSingleCutFileName(result.source.fileName));
+    setExportName(splitOutputFileName(buildSingleCutFileName(result.source.fileName)));
     setCurrentTime(0);
     setIsPlaying(false);
     setPreviewDuration(result.mediaInfo.durationSeconds);
     setPreviewError(null);
     setExportPreview(null);
-    setExportJob({ status: 'idle', message: null, outputPaths: [] });
+    setExportJob({ status: 'idle', message: null, strategyHeadline: null, strategyHint: null, outputPaths: [] });
     setSelection({ inPointSeconds: 0, outPointSeconds: duration });
     playSegmentsQueueRef.current = null;
     playSegmentsIndexRef.current = 0;
@@ -152,7 +247,11 @@ export const useEditorController = () => {
     try {
       const result = await yoinkrClient.editor.openSource(request);
       resetEditorState(result);
-      setActivityMessage(`Loaded ${result.source.displayName}`);
+      setActivityMessage(
+        result.previewPlaybackNote
+          ? `Loaded ${result.source.displayName} — ${result.previewPlaybackNote}`
+          : `Loaded ${result.source.displayName}`,
+      );
     } catch (openError) {
       setError(openError instanceof Error ? openError.message : 'Unable to open the selected file.');
     } finally {
@@ -190,12 +289,57 @@ export const useEditorController = () => {
     setOutputFilePath(null);
   }, [exportFileName, exportMode]);
 
+  /** Fix [0,0] in/out when duration was unknown at open until <video> reports duration — enables Add segment + timeline scrub. */
+  useEffect(() => {
+    if (!openResult) {
+      return;
+    }
+    const d = openResult.mediaInfo.durationSeconds ?? previewDuration ?? 0;
+    if (d <= 0) {
+      return;
+    }
+    setSelection((prev) => {
+      let nextIn: number;
+      let nextOut: number;
+      if (prev.outPointSeconds <= prev.inPointSeconds) {
+        nextIn = 0;
+        nextOut = d;
+      } else {
+        nextIn = clamp(prev.inPointSeconds, 0, d);
+        nextOut = clamp(prev.outPointSeconds, nextIn + 0.001, d);
+      }
+      if (prev.inPointSeconds === nextIn && prev.outPointSeconds === nextOut) {
+        return prev;
+      }
+      return { inPointSeconds: nextIn, outPointSeconds: nextOut };
+    });
+  }, [openResult, previewDuration]);
+
+  useEffect(() => {
+    const unsub = yoinkrClient.editor.onPreviewProxyReady((payload) => {
+      setOpenResult((prev) => {
+        if (!prev || prev.source.sourcePath !== payload.sourcePath) {
+          return prev;
+        }
+        return {
+          ...prev,
+          previewPlaybackPath: payload.playbackPath,
+          previewPlaybackNote: null,
+          source: { ...prev.source, previewSupported: true },
+        };
+      });
+      setPreviewError(null);
+      setActivityMessage('Preview encoding finished — video should play now.');
+    });
+    return unsub;
+  }, []);
+
   const closeEdit = useCallback(() => {
     setOpenResult(null);
     setSegments([]);
     setSelectedSegmentId(null);
     setSegmentLabel('');
-    setExportFileName('');
+    setExportName({ stem: '', ext: '' });
     setOutputDirectory(null);
     setOutputFilePath(null);
     setCurrentTime(0);
@@ -203,7 +347,7 @@ export const useEditorController = () => {
     setPreviewDuration(null);
     setPreviewError(null);
     setExportPreview(null);
-    setExportJob({ status: 'idle', message: null, outputPaths: [] });
+    setExportJob({ status: 'idle', message: null, strategyHeadline: null, strategyHint: null, outputPaths: [] });
     setSelection({ inPointSeconds: 0, outPointSeconds: 0 });
     setError(null);
     setActivityMessage(null);
@@ -462,7 +606,23 @@ export const useEditorController = () => {
     setIsExporting(true);
     setError(null);
     setActivityMessage(null);
-    setExportJob({ status: 'exporting', message: 'Exporting...', outputPaths: [] });
+    setExportJob({
+      status: 'exporting',
+      message: 'Starting export…',
+      strategyHeadline: null,
+      strategyHint: null,
+      outputPaths: [],
+    });
+
+    exportProgressUnsubRef.current?.();
+    exportProgressUnsubRef.current = yoinkrClient.editor.onExportProgress((payload) => {
+      setExportJob((prev) => ({
+        ...prev,
+        strategyHeadline: payload.strategyLabel,
+        strategyHint: payload.strategyExplanation,
+        message: formatExportProgressLine(payload),
+      }));
+    });
 
     try {
       let nextOutputDirectory = outputDirectory;
@@ -483,7 +643,7 @@ export const useEditorController = () => {
       }
 
       const userBaseName = exportFileName.trim()
-        ? exportFileName.trim().replace(/\.[^.]+$/, '')
+        ? exportName.stem.trim()
         : openResult.source.displayName;
 
       const result = await yoinkrClient.editor.exportMedia({
@@ -499,16 +659,42 @@ export const useEditorController = () => {
       });
 
       setExportPreview(result.preview);
-      setExportJob({ status: 'complete', message: result.message, outputPaths: result.outputPaths });
+      setExportJob({
+        status: 'complete',
+        message: result.message,
+        strategyHeadline: null,
+        strategyHint: null,
+        outputPaths: result.outputPaths,
+      });
       setActivityMessage(result.message);
     } catch (exportError) {
       const message = exportError instanceof Error ? exportError.message : 'Export failed.';
       setError(message);
-      setExportJob({ status: 'error', message, outputPaths: [] });
+      setExportJob({
+        status: 'error',
+        message,
+        strategyHeadline: null,
+        strategyHint: null,
+        outputPaths: [],
+      });
     } finally {
+      exportProgressUnsubRef.current?.();
+      exportProgressUnsubRef.current = null;
       setIsExporting(false);
     }
-  }, [cutMode, exportMode, openResult, outputDirectory, outputFilePath, workingSegments]);
+  }, [cutMode, exportFileName, exportMode, exportName.stem, openResult, outputDirectory, outputFilePath, workingSegments]);
+
+  const setExportFileName = useCallback((value: string | ((prev: string) => string)) => {
+    setExportName((prev) => {
+      const prevFull = composeOutputFileName(prev.stem, prev.ext);
+      const nextFull = typeof value === 'function' ? (value as (prevFull: string) => string)(prevFull) : value;
+      return splitOutputFileName(nextFull);
+    });
+  }, []);
+
+  const setExportOutputStem = useCallback((stem: string) => {
+    setExportName((prev) => ({ ...prev, stem }));
+  }, []);
 
   const revealOutputPath = useCallback(async (targetPath: string): Promise<void> => {
     try {
@@ -553,6 +739,8 @@ export const useEditorController = () => {
     outputDirectory,
     outputFilePath,
     exportFileName,
+    exportOutputStem: exportName.stem,
+    exportOutputExtension: exportName.ext,
     currentTime,
     sourceDuration,
     previewUrl,
@@ -568,6 +756,7 @@ export const useEditorController = () => {
     keyframeTimes,
     setSegmentLabel,
     setExportFileName,
+    setExportOutputStem,
     setCutMode,
     setExportMode,
     closeEdit,

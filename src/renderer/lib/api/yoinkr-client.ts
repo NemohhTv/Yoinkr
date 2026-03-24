@@ -1,6 +1,14 @@
 import type { BinaryStatus, DownloadableToolName, ToolDownloadProgress, ToolDownloadResult } from '@shared/types/common';
 import type { DownloadDraft, DownloadMetadata, DownloadUrlValidation, DownloadHistoryRecord, ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
-import type { EditorExportPreview, EditorExportRequest, EditorExportResult, EditorOpenRequest, EditorOpenResult, EditorTimelineAssets } from '@shared/types/editor';
+import type {
+  EditorExportPreview,
+  EditorExportProgressPayload,
+  EditorExportRequest,
+  EditorExportResult,
+  EditorOpenRequest,
+  EditorOpenResult,
+  EditorTimelineAssets,
+} from '@shared/types/editor';
 import type { AppSettings, SettingsPatch } from '@shared/types/settings';
 import type { BootstrapState, DiagnosticsInfo } from '@shared/types/app';
 
@@ -52,6 +60,8 @@ const downloaderClient = {
 const editorClient = {
   openSource: async (request: EditorOpenRequest): Promise<EditorOpenResult> =>
     unwrapResult(await window.yoinkrApi.editor.openSource(request)),
+  onPreviewProxyReady: (callback: (payload: { sourcePath: string; playbackPath: string }) => void): (() => void) =>
+    window.yoinkrApi.editor.onPreviewProxyReady(callback),
   getTimelineAssets: async (sourcePath: string): Promise<EditorTimelineAssets> =>
     unwrapResult(await window.yoinkrApi.editor.getTimelineAssets(sourcePath)),
   previewExport: async (request: EditorExportRequest): Promise<EditorExportPreview> =>
@@ -64,6 +74,8 @@ const editorClient = {
     unwrapResult(await window.yoinkrApi.editor.pickExportFile(suggestedName)),
   exportMedia: async (request: EditorExportRequest): Promise<EditorExportResult> =>
     unwrapResult(await window.yoinkrApi.editor.exportMedia(request)),
+  onExportProgress: (callback: (payload: EditorExportProgressPayload) => void): (() => void) =>
+    window.yoinkrApi.editor.onExportProgress(callback),
 };
 
 const toolsClient = {

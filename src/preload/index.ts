@@ -4,6 +4,7 @@ import { ipcChannels } from '@shared/contracts/channels';
 import type { YoinkrApi } from '@shared/contracts/api';
 import type { ToolDownloadProgress } from '@shared/types/common';
 import type { DownloadHistoryRecord, ItemDownloadProgress } from '@shared/types/downloader';
+import type { EditorExportProgressPayload } from '@shared/types/editor';
 
 const api: YoinkrApi = {
   app: {
@@ -40,12 +41,33 @@ const api: YoinkrApi = {
   },
   editor: {
     openSource: (request) => ipcRenderer.invoke(ipcChannels.editorOpenSource, request),
+    onPreviewProxyReady: (callback) => {
+      const handler = (
+        _event: Electron.IpcRendererEvent,
+        payload: { sourcePath: string; playbackPath: string },
+      ): void => {
+        callback(payload);
+      };
+      ipcRenderer.on(ipcChannels.editorPreviewProxyReady, handler);
+      return () => {
+        ipcRenderer.removeListener(ipcChannels.editorPreviewProxyReady, handler);
+      };
+    },
     getTimelineAssets: (sourcePath) => ipcRenderer.invoke(ipcChannels.editorGetTimelineAssets, sourcePath),
     previewExport: (request) => ipcRenderer.invoke(ipcChannels.editorPreviewExport, request),
     pickSourceFile: () => ipcRenderer.invoke(ipcChannels.editorPickSourceFile),
     pickExportDirectory: () => ipcRenderer.invoke(ipcChannels.editorPickExportDirectory),
     pickExportFile: (suggestedName) => ipcRenderer.invoke(ipcChannels.editorPickExportFile, suggestedName),
     exportMedia: (request) => ipcRenderer.invoke(ipcChannels.editorExportMedia, request),
+    onExportProgress: (callback) => {
+      const handler = (_event: Electron.IpcRendererEvent, payload: EditorExportProgressPayload): void => {
+        callback(payload);
+      };
+      ipcRenderer.on(ipcChannels.editorExportProgress, handler);
+      return () => {
+        ipcRenderer.removeListener(ipcChannels.editorExportProgress, handler);
+      };
+    },
   },
   tools: {
     getBinaryStatus: () => ipcRenderer.invoke(ipcChannels.toolsGetBinaryStatus),

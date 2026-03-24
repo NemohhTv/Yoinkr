@@ -1,4 +1,13 @@
-import type { EditorCutBoundaryInfo, EditorCutMode, EditorExportPreview, EditorExportRequest, EditorExportStrategy, EditorPreviewSegment, EditorSegment } from '@shared/types/editor';
+import type {
+  EditorCutBoundaryInfo,
+  EditorCutMode,
+  EditorExportPreview,
+  EditorExportRequest,
+  EditorExportStrategy,
+  EditorMediaInfo,
+  EditorPreviewSegment,
+  EditorSegment,
+} from '@shared/types/editor';
 import type { AppSettings } from '@shared/types/settings';
 
 import type { FfprobeAnalysisService } from './ffprobe-analysis-service';
@@ -8,8 +17,19 @@ const almostEqual = (left: number, right: number): boolean => Math.abs(left - ri
 export class ExportPlanningService {
   constructor(private readonly ffprobeAnalysisService: FfprobeAnalysisService) {}
 
-  async previewExport(request: EditorExportRequest, settings: AppSettings): Promise<EditorExportPreview> {
-    const mediaInfo = await this.ffprobeAnalysisService.inspectSource(request.sourcePath, settings);
+  /**
+   * @param existingMediaInfo - When provided (e.g. from export), avoids a second full keyframe scan.
+   */
+  async previewExport(
+    request: EditorExportRequest,
+    settings: AppSettings,
+    existingMediaInfo?: EditorMediaInfo,
+  ): Promise<EditorExportPreview> {
+    const mediaInfo =
+      existingMediaInfo
+      ?? (await this.ffprobeAnalysisService.inspectSource(request.sourcePath, settings, {
+        includeKeyframes: true,
+      }));
     const segmentPreviews = request.segments
       .filter((segment) => segment.selected)
       .map((segment) => this.buildSegmentPreview(segment, request.cutMode, mediaInfo));
@@ -47,10 +67,14 @@ export class ExportPlanningService {
         || mediaInfo.mergeCutsSupported
       );
 
+    const { strategyLabel, strategyExplanation } = this.describeStrategyForUser(strategy, request.cutMode);
+
     return {
       exportMode: request.exportMode,
       cutMode: request.cutMode,
       strategy,
+      strategyLabel,
+      strategyExplanation,
       canExport,
       mergeSupported: strategy !== 'stream-copy' || mediaInfo.mergeCutsSupported,
       outputDescription: this.describeOutput(request, segmentPreviews.length, strategy),
@@ -59,6 +83,36 @@ export class ExportPlanningService {
         : request.outputDirectory?.trim() || null,
       warnings,
       segments: segmentPreviews,
+    };
+  }
+
+  private describeStrategyForUser(
+    strategy: EditorExportStrategy,
+    cutMode: EditorCutMode,
+  ): { strategyLabel: string; strategyExplanation: string } {
+    if (strategy === 'stream-copy') {
+      return {
+        strategyLabel: 'Lossless stream-copy (no re-encode)',
+        strategyExplanation:
+          cutMode === 'stream-copy'
+            ? 'Cuts snap to safe keyframes when needed. FFmpeg only copies packets — long clips still mean reading/writing the full segment size from disk (often slower than CPU).'
+            : 'FFmpeg copies compressed packets only. Very long segments still move a lot of data; wait time scales with segment length and disk speed.',
+      };
+    }
+
+    if (strategy === 'smart-cut') {
+      return {
+        strategyLabel: 'Smart-cut',
+        strategyExplanation: 'Hybrid processing for the selected precision.',
+      };
+    }
+
+    return {
+      strategyLabel: 'Re-encode (exact timing)',
+      strategyExplanation:
+        cutMode === 'exact'
+          ? 'Exact frame boundaries require full decode + encode — expect sustained CPU use. Progress shows encoded output length vs this segment.'
+          : 'Auto chose re-encode to honor your edit points. For faster runs, try Stream copy mode or align in/out to keyframes.',
     };
   }
 

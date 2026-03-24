@@ -12,10 +12,13 @@ import sharp from 'sharp';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const srcPng = join(root, 'src/renderer/assets/yoinkr-icon.png');
 const buildDir = join(root, 'build');
+const publicDir = join(root, 'src/renderer/public');
 const tempSquare = join(buildDir, '.icon-square-256.png');
 const outIco = join(buildDir, 'icon.ico');
+const faviconIco = join(publicDir, 'favicon.ico');
 
 mkdirSync(buildDir, { recursive: true });
+mkdirSync(publicDir, { recursive: true });
 
 await sharp(srcPng)
   .resize(256, 256, { fit: 'cover', position: 'centre' })
@@ -24,6 +27,8 @@ await sharp(srcPng)
 
 const icoBuffer = await pngToIco(tempSquare);
 writeFileSync(outIco, icoBuffer);
+/** Same .ico as Windows exe / window icon — used by packaged index.html favicon. */
+writeFileSync(faviconIco, icoBuffer);
 
 try {
   unlinkSync(tempSquare);
@@ -32,3 +37,4 @@ try {
 }
 
 console.log(`Wrote ${outIco}`);
+console.log(`Wrote ${faviconIco}`);
