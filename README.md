@@ -11,7 +11,7 @@
 Official builds are published as **GitHub Releases** (NSIS installer + portable + update metadata).
 
 1. Open **Releases**: **[https://github.com/NemohhTv/Yoinkr/releases](https://github.com/NemohhTv/Yoinkr/releases)**  
-2. Open the **latest** release (or pick a tag, e.g. **v0.2.5**).  
+2. Open the **latest** release (or pick a tag, e.g. **v0.2.6**).  
 3. Under **Assets**, download (names use **hyphens**, as built by CI):
    - **`Yoinkr-Setup-x.x.x.exe`** — recommended: NSIS installer (Start menu entry; supports in-app updates from GitHub).  
    - **`Yoinkr-x.x.x.exe`** — portable; in-app auto-update is disabled for portable builds.  
@@ -21,7 +21,7 @@ Official builds are published as **GitHub Releases** (NSIS installer + portable 
 [https://github.com/NemohhTv/Yoinkr/releases/latest](https://github.com/NemohhTv/Yoinkr/releases/latest)
 
 **Example (replace version with the tag you want):**  
-`https://github.com/NemohhTv/Yoinkr/releases/download/v0.2.5/Yoinkr-Setup-0.2.5.exe`
+`https://github.com/NemohhTv/Yoinkr/releases/download/v0.2.6/Yoinkr-Setup-0.2.6.exe`
 
 After installing from the **Setup** exe, Yoinkr can **check for updates** from the sidebar (GitHub Releases). Building the installer locally with `npm run dist` also works; updates still use the same GitHub feed when `owner` / `repo` match this repository.
 
@@ -66,8 +66,8 @@ Pushing a **version tag** `v*` that matches `"version"` in `package.json` runs *
 Typical flow:
 
 1. Bump `"version"` in `package.json` and commit.  
-2. `git tag v0.2.5 && git push origin main && git push origin v0.2.5`  
-3. Wait for the workflow; then download **`Yoinkr-Setup-0.2.5.exe`** (or whatever version) from **Releases → Assets**.
+2. `git tag v0.2.6 && git push origin main && git push origin v0.2.6`  
+3. Wait for the workflow; then download **`Yoinkr-Setup-0.2.6.exe`** (or whatever version) from **Releases → Assets**.
 
 ---
 

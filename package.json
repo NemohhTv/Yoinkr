@@ -1,10 +1,12 @@
 {
   "name": "yoinkr",
   "productName": "Yoinkr",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Windows-first desktop media workflow app for download-to-edit pipelines.",
   "main": "out/main/index.js",
-  "author": "Cursor",
+  "author": {
+    "name": "Wes"
+  },
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
@@ -61,6 +63,7 @@
   "build": {
     "appId": "com.yoinkr.app",
     "productName": "Yoinkr",
+    "copyright": "Copyright © Wes",
     "icon": "build/icon.ico",
     "directories": {
       "buildResources": "build",
