@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import type { AudioPreference, DownloadDraft } from '@shared/types/downloader';
 import type { EditorOpenRequest } from '@shared/types/editor';
 
+import { DownloadSectionTimeline } from './download-section-timeline';
 import type { useDownloaderController } from './use-downloader-controller';
 
 type DownloaderController = ReturnType<typeof useDownloaderController>;
@@ -18,6 +19,9 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
     isLoadingMetadata,
     error,
     activityMessage,
+    sectionTimelineOpenId,
+    toggleSectionTimeline,
+    updateQueueItem,
   } = controller;
 
   const navigate = useNavigate();
@@ -100,11 +104,40 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
                 ? (['mp3', 'm4a', 'wav', 'flac'] as const)
                 : (['mp4', 'mkv', 'webm', 'original'] as const);
 
-            return (
-              <div key={item.id} className={`dl-item-row ${item.status === 'complete' ? 'dl-item-row-complete' : ''} ${item.status === 'error' ? 'dl-item-row-error' : ''}`}>
-                <img className="dl-item-thumb" src={item.thumbnailUrl} alt={item.title} />
+            const canSection =
+              item.durationSeconds != null && item.durationSeconds > 0;
+            const sectionTimelineOpen = sectionTimelineOpenId === item.id;
 
-                <div className="dl-item-body">
+            const downloadPct = Math.min(100, Math.max(0, item.progressPercent));
+            const progressMsgRaw = (item.progressMessage ?? '').trim();
+            const hideProgressDetail =
+              !progressMsgRaw ||
+              /^Starting\b/i.test(progressMsgRaw) ||
+              /^Downloading( clip)?\.\.\.?\s*$/i.test(progressMsgRaw);
+
+            return (
+              <div
+                key={item.id}
+                className={`dl-item-row-wrap ${item.status === 'complete' ? 'dl-item-row-wrap-complete' : ''} ${item.status === 'error' ? 'dl-item-row-wrap-error' : ''}`}
+              >
+                <div className="dl-item-row">
+                  <button
+                    type="button"
+                    className={`dl-item-thumb-btn ${sectionTimelineOpen ? 'dl-item-thumb-btn-active' : ''}`}
+                    disabled={!canSection || isActive}
+                    onClick={() => toggleSectionTimeline(item.id)}
+                    title={
+                      !canSection
+                        ? 'Duration unknown — full video only'
+                        : sectionTimelineOpen
+                          ? 'Hide download section'
+                          : 'Choose download section (click to show timeline)'
+                    }
+                  >
+                    <img className="dl-item-thumb" src={item.thumbnailUrl} alt="" />
+                  </button>
+
+                  <div className="dl-item-body">
                   <div className="dl-item-head">
                     <h3>{item.title}</h3>
                     <span className="dl-item-subhead">{item.extractor} · {item.durationText}</span>
@@ -138,9 +171,14 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
                   {isActive && (
                     <div className="dl-item-progress">
                       <div className="dl-item-progress-track">
-                        <div className="dl-item-progress-fill" style={{ width: `${Math.max(2, item.progressPercent)}%` }} />
+                        <div className="dl-item-progress-fill" style={{ width: `${Math.max(2, downloadPct)}%` }} />
                       </div>
-                      <span className="dl-item-progress-label">{item.progressMessage}</span>
+                      <span className="dl-item-progress-label">
+                        <span className="dl-item-progress-pct">Download: {downloadPct.toFixed(1)}%</span>
+                        {!hideProgressDetail && (
+                          <span className="dl-item-progress-detail"> · {progressMsgRaw}</span>
+                        )}
+                      </span>
                     </div>
                   )}
 
@@ -201,6 +239,17 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
                   >↗</button>
                   <button className="dl-item-action-btn" onClick={() => controller.removeQueueItem(item.id)} title="Remove" disabled={isActive}>✕</button>
                 </div>
+                </div>
+
+                {sectionTimelineOpen && canSection && (
+                  <DownloadSectionTimeline
+                    durationSec={item.durationSeconds!}
+                    startSec={item.clipStartSec}
+                    endSec={item.clipEndSec}
+                    disabled={isActive}
+                    onChange={(start, end) => updateQueueItem(item.id, { clipStartSec: start, clipEndSec: end })}
+                  />
+                )}
               </div>
             );
           })

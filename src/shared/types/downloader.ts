@@ -87,6 +87,15 @@ export interface ItemDownloadRequest {
   audioPreference: AudioPreference;
   allowReencodeFallback: boolean;
   title: string;
+  /**
+   * Known duration from metadata (seconds). Used with section times to detect “full file” vs partial.
+   */
+  durationSeconds?: number | null;
+  /**
+   * Partial download via yt-dlp `--download-sections` (requires ffmpeg). Omitted or full-span = entire video.
+   */
+  sectionStartSec?: number | null;
+  sectionEndSec?: number | null;
 }
 
 export interface ItemDownloadProgress {

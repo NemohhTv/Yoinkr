@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import treeKill from 'tree-kill';
 
@@ -26,7 +26,76 @@ const sanitizeDownloadDisplayName = (name: string): string => {
   return collapsed.slice(0, 180) || 'Video';
 };
 
+const stripAnsi = (line: string): string =>
+  line
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+/** Last resort: any `[download]` line containing `12.3%` (ANSI already stripped). */
+const LOOSE_DOWNLOAD_PERCENT_RE = /\[download\][^\n]*?(\d+(?:\.\d+)?)\s*%/;
+
+function formatBytesForProgress(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+/** yt-dlp writes `.part` / temp files here — grows even when piped stderr is block-buffered. */
+function sumBytesInTempDir(dir: string): number {
+  let total = 0;
+  try {
+    for (const name of readdirSync(dir)) {
+      const p = join(dir, name);
+      try {
+        const st = statSync(p);
+        if (st.isFile()) {
+          total += st.size;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* directory may not exist yet */
+  }
+  return total;
+}
+
+/** Temp fragments + `id__…` partials in the download folder (Windows pipe buffering may hide stderr progress). */
+function sumStreamingBytesForDownload(tempDir: string, downloadDir: string, downloadId: string): number {
+  let total = sumBytesInTempDir(tempDir);
+  try {
+    for (const name of readdirSync(downloadDir)) {
+      if (!name.startsWith(downloadId)) {
+        continue;
+      }
+      const p = join(downloadDir, name);
+      try {
+        const st = statSync(p);
+        if (st.isFile()) {
+          total += st.size;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return total;
+}
+
+/** Standard: `[download]  45.2% of 100.00MiB at  2.50MiB/s ETA 00:45` */
 const PROGRESS_RE = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+~?\s*\S+\s+at\s+(.+?)\s+ETA\s+(\S+)/;
+/** Finished: `[download] 100% of 1.23GiB in 00:05 at 2.5MiB/s` (no `ETA`). */
+const PROGRESS_RE_FINISHED = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+~?\s*\S+\s+in\s+(\S+)\s+at\s+(.+)/;
+/** When total size unknown: `[download] 123.45KiB at 2.50MiB/s (00:01:23)` — often no `%` (see yt-dlp `FileDownloader.report_progress`). */
+const PROGRESS_RE_BYTES_ELAPSED = /\[download\]\s+(\S+)\s+at\s+(.+?)\s+\(([^)]+)\)(?:\s+\(frag\s+(\d+)\/(\d+)\))?/;
+/** Default template: `[download]  45.1% at 2.50MiB/s ETA 00:45` */
+const PROGRESS_RE_PERCENT_ONLY = /\[download\]\s+(\d+(?:\.\d+)?)%\s+at\s+(.+?)\s+ETA\s+(\S+)/;
+/** Fragment-only hint on a line that also has percent: `... (frag 12/1500)` */
+const FRAG_RE = /\(frag\s+(\d+)\/(\d+)\)/;
 /** yt-dlp post-processors (merge, remux, re-encode, embed, fixups). */
 const POSTPROCESS_TAG_RE =
   /\[(?:Merger|Mux|VideoRemuxer|VideoConvertor|ExtractAudio|EmbedSubtitle|EmbedThumbnail|FFmpeg|FixupM[^\]]*)\]/i;
@@ -35,6 +104,13 @@ const FFMPEG_TIME_RE = /\btime=(\d{2}:\d{2}:\d{2}\.\d{2})\b/;
 /** Large downloads + merge + AAC remux can exceed 30 minutes. */
 const DOWNLOAD_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 const FFMPEG_PROGRESS_THROTTLE_MS = 450;
+/** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
+const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
+/**
+ * Parallel fragment downloads for DASH/HLS (YouTube, etc.). Section clips still pull many fragments;
+ * concurrency reduces wall-clock time vs strictly sequential fetches.
+ */
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 8;
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
@@ -75,10 +151,22 @@ export class YtDlpDownloadService {
     }
 
     const ffmpeg = this.binaryResolver.resolveTool('ffmpeg', settings);
+    if (
+      this.requiresPartialSectionDownload(request) &&
+      (!ffmpeg.resolvedPath || !existsSync(ffmpeg.resolvedPath))
+    ) {
+      throw new ServiceError(
+        'TOOL_MISSING',
+        'Downloading part of a video requires ffmpeg. Configure it in Settings > Tool configuration.',
+      );
+    }
     const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
     mkdirSync(tempDir, { recursive: true });
     const outputTemplate = join(downloadDir, `${request.id}__%(title).200B.%(ext)s`);
+
+    const isClipDownload = this.requiresPartialSectionDownload(request);
+    const progressLabel = isClipDownload ? 'Clip' : 'Download';
 
     onProgress({
       id: request.id,
@@ -86,7 +174,7 @@ export class YtDlpDownloadService {
       percent: 0,
       speed: '',
       eta: '',
-      message: 'Starting download...',
+      message: isClipDownload ? 'Starting clip download…' : 'Starting download...',
     });
 
     const runAttempt = (
@@ -95,7 +183,14 @@ export class YtDlpDownloadService {
       const child = spawn(ytDlp.resolvedPath!, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1' },
+        env: {
+          ...process.env,
+          PYTHONUNBUFFERED: '1',
+          PYTHONIOENCODING: 'utf-8',
+          /** Avoid tools switching to “no TTY” / no-progress behavior when piped. */
+          FORCE_COLOR: '0',
+          NO_COLOR: '1',
+        },
       });
 
       this.activeProcesses.set(request.id, child);
@@ -104,22 +199,190 @@ export class YtDlpDownloadService {
       let stderr = '';
       let inHeavyPostprocess = false;
       let lastFfmpegProgressEmit = 0;
+      /** When yt-dlp omits total size, percent is unknown — advance gently until fragment ratio appears. */
+      let pseudoPercent = 0;
+
+      let lastProgressEmitAt = Date.now();
+      let lastShownPercent = 0;
+      let lastPartBytes = 0;
+      let clipHeartbeat: ReturnType<typeof setInterval> | null = null;
+
+      const emit = (p: ItemDownloadProgress): void => {
+        lastProgressEmitAt = Date.now();
+        let out = p;
+        if (p.phase === 'downloading') {
+          const pct = Math.max(p.percent, lastShownPercent);
+          out = { ...p, percent: pct };
+        }
+        if (out.percent > lastShownPercent) {
+          lastShownPercent = out.percent;
+        }
+        onProgress(out);
+      };
+
+      const clearClipHeartbeat = (): void => {
+        if (clipHeartbeat != null) {
+          clearInterval(clipHeartbeat);
+          clipHeartbeat = null;
+        }
+      };
+
+      const mergingMessage = isClipDownload
+        ? 'Clip streams received — merging / remuxing (ffmpeg)…'
+        : 'Download finished — merging / encoding final file (this step is often slow on long 4K videos).';
 
       const parseLine = (line: string): void => {
-        const progressMatch = line.match(PROGRESS_RE);
+        const clean = stripAnsi(line).trim();
+        if (!clean) {
+          return;
+        }
+
+        const progressMatch = clean.match(PROGRESS_RE);
         if (progressMatch) {
-          onProgress({
+          const pctRaw = parseFloat(progressMatch[1]);
+          if (pctRaw >= 99.5) {
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'merging',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: mergingMessage,
+            });
+            return;
+          }
+          let pct = Math.min(99, Math.round(pctRaw));
+          const fragMatch = clean.match(FRAG_RE);
+          if (fragMatch) {
+            const fi = parseInt(fragMatch[1], 10);
+            const fn = parseInt(fragMatch[2], 10);
+            if (fn > 0) {
+              pct = Math.min(99, Math.max(pct, Math.round((fi / fn) * 100)));
+            }
+          }
+          emit({
             id: request.id,
             phase: 'downloading',
-            percent: Math.min(99, Math.round(parseFloat(progressMatch[1]))),
-            speed: progressMatch[2],
+            percent: pct,
+            speed: progressMatch[2].trim(),
             eta: progressMatch[3],
-            message: `Downloading... ${progressMatch[1]}%`,
+            message: `${progressLabel}: ${progressMatch[1]}%`,
           });
           return;
         }
 
-        const postTagMatch = line.match(POSTPROCESS_TAG_RE);
+        const finishedMatch = clean.match(PROGRESS_RE_FINISHED);
+        if (finishedMatch) {
+          const pctRaw = parseFloat(finishedMatch[1]);
+          if (pctRaw >= 99.5) {
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'merging',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: mergingMessage,
+            });
+            return;
+          }
+          emit({
+            id: request.id,
+            phase: 'downloading',
+            percent: Math.min(99, Math.round(pctRaw)),
+            speed: finishedMatch[3].trim(),
+            eta: '',
+            message: `${progressLabel}: ${finishedMatch[1]}% (in ${finishedMatch[2]})`,
+          });
+          return;
+        }
+
+        const percentOnlyMatch = clean.match(PROGRESS_RE_PERCENT_ONLY);
+        if (percentOnlyMatch) {
+          const pctRaw = parseFloat(percentOnlyMatch[1]);
+          if (pctRaw >= 99.5) {
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'merging',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: mergingMessage,
+            });
+            return;
+          }
+          emit({
+            id: request.id,
+            phase: 'downloading',
+            percent: Math.min(99, Math.round(pctRaw)),
+            speed: percentOnlyMatch[2].trim(),
+            eta: percentOnlyMatch[3],
+            message: `${progressLabel}: ${percentOnlyMatch[1]}%`,
+          });
+          return;
+        }
+
+        const bytesMatch = clean.match(PROGRESS_RE_BYTES_ELAPSED);
+        if (bytesMatch) {
+          let pct: number;
+          if (bytesMatch[4] != null && bytesMatch[5] != null) {
+            const fi = parseInt(bytesMatch[4], 10);
+            const fn = parseInt(bytesMatch[5], 10);
+            pct = fn > 0 ? Math.min(99, Math.round((fi / fn) * 100)) : Math.min(90, pseudoPercent + 3);
+            pseudoPercent = pct;
+          } else {
+            pseudoPercent = Math.min(90, pseudoPercent + 3);
+            pct = pseudoPercent;
+          }
+          emit({
+            id: request.id,
+            phase: 'downloading',
+            percent: pct,
+            speed: bytesMatch[2].trim(),
+            eta: '',
+            message: `${progressLabel}: ${bytesMatch[1]} at ${bytesMatch[2].trim()} (${bytesMatch[3]})`,
+          });
+          return;
+        }
+
+        const loosePct = clean.match(LOOSE_DOWNLOAD_PERCENT_RE);
+        if (loosePct) {
+          const pctRaw = parseFloat(loosePct[1]);
+          if (pctRaw >= 99.5) {
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'merging',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: mergingMessage,
+            });
+            return;
+          }
+          let pct = Math.min(99, Math.round(pctRaw));
+          const fragMatch = clean.match(FRAG_RE);
+          if (fragMatch) {
+            const fi = parseInt(fragMatch[1], 10);
+            const fn = parseInt(fragMatch[2], 10);
+            if (fn > 0) {
+              pct = Math.min(99, Math.max(pct, Math.round((fi / fn) * 100)));
+            }
+          }
+          emit({
+            id: request.id,
+            phase: 'downloading',
+            percent: pct,
+            speed: '',
+            eta: '',
+            message: `${progressLabel}: ${loosePct[1]}%`,
+          });
+          return;
+        }
+
+        const postTagMatch = clean.match(POSTPROCESS_TAG_RE);
         if (postTagMatch) {
           inHeavyPostprocess = true;
           const tag = postTagMatch[0].toLowerCase();
@@ -130,95 +393,135 @@ export class YtDlpDownloadService {
             tag.includes('ffmpeg') ||
             tag.includes('embedsubtitle') ||
             tag.includes('embedthumbnail');
-          onProgress({
+          emit({
             id: request.id,
             phase: encodingLike ? 'converting' : 'merging',
             percent: 99,
             speed: '',
             eta: '',
             message: encodingLike
-              ? 'Encoding / remuxing output (large files can take several more minutes)...'
-              : 'Merging streams...',
+              ? (isClipDownload
+                ? 'Clip encoding / remuxing (ffmpeg)…'
+                : 'Encoding / remuxing output (large files can take several more minutes)...')
+              : (isClipDownload ? 'Merging clip streams…' : 'Merging streams...'),
           });
           return;
         }
 
-        const ffmpegTime = line.match(FFMPEG_TIME_RE);
+        const ffmpegTime = clean.match(FFMPEG_TIME_RE);
         if (ffmpegTime && inHeavyPostprocess) {
           const now = Date.now();
           if (now - lastFfmpegProgressEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
             lastFfmpegProgressEmit = now;
-            onProgress({
+            emit({
               id: request.id,
               phase: 'converting',
               percent: 99,
               speed: '',
               eta: '',
-              message: `Processing… ${ffmpegTime[1]}`,
+              message: isClipDownload ? `Clip remux / encode… ${ffmpegTime[1]}` : `Processing… ${ffmpegTime[1]}`,
             });
           }
           return;
         }
 
-        if (/\[download\][^\n]*\b100(?:\.\d+)?%/.test(line)) {
+        if (/\[download\][^\n]*\b100(?:\.\d+)?%/.test(clean)) {
           inHeavyPostprocess = true;
-          onProgress({
+          emit({
             id: request.id,
             phase: 'merging',
             percent: 99,
             speed: '',
             eta: '',
-            message:
-              'Download finished — merging / encoding final file (this step is often slow on long 4K videos).',
+            message: mergingMessage,
           });
           return;
         }
 
-        const destMatch = line.match(/(?:Merging formats into|Destination:)\s+"?(.+?)"?\s*$/);
+        const destMatch = clean.match(/(?:Merging formats into|Destination:)\s+"?(.+?)"?\s*$/);
         if (destMatch) {
           lastOutputPath = destMatch[1].replace(/^"/, '').replace(/"$/, '');
         }
 
-        const alreadyMatch = line.match(/\[download\]\s+(.+?)\s+has already been downloaded/);
+        const alreadyMatch = clean.match(/\[download\]\s+(.+?)\s+has already been downloaded/);
         if (alreadyMatch) {
           lastOutputPath = alreadyMatch[1];
         }
 
-        const movingMatch = line.match(/Moving file\s+"?(.+?)"?\s+to\s+"?(.+?)"?\s*$/);
+        const movingMatch = clean.match(/Moving file\s+"?(.+?)"?\s+to\s+"?(.+?)"?\s*$/);
         if (movingMatch) {
           lastOutputPath = movingMatch[2].replace(/^"/, '').replace(/"$/, '');
         }
 
-        const cleaned = line.trim().replace(/^"/, '').replace(/"$/, '');
-        if (!line.startsWith('[') && !line.startsWith('Deleting') && /^[A-Z]:\\/i.test(cleaned)) {
-          lastOutputPath = cleaned;
+        const pathGuess = clean.trim().replace(/^"/, '').replace(/"$/, '');
+        if (!clean.startsWith('[') && !clean.startsWith('Deleting') && /^[A-Z]:\\/i.test(pathGuess)) {
+          lastOutputPath = pathGuess;
         }
       };
 
-      let stdoutBuffer = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdoutBuffer += chunk.toString();
-        const lines = stdoutBuffer.split(/\r\n|\r|\n/);
-        stdoutBuffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line.trim()) parseLine(line);
+      /**
+       * Buffer stdout/stderr and split on `\n` after normalizing `\r` → `\n` so `\r`-only progress
+       * lines flush (readline + pipes on Windows can still coalesce oddly with the bundled exe).
+       */
+      const outBuf = { s: '' };
+      const errBuf = { s: '' };
+      const feedStream = (acc: { s: string }, chunk: Buffer, accumulateStderr: boolean): void => {
+        acc.s += chunk.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        let idx: number;
+        while ((idx = acc.s.indexOf('\n')) >= 0) {
+          const line = acc.s.slice(0, idx);
+          acc.s = acc.s.slice(idx + 1);
+          if (accumulateStderr) {
+            stderr += `${line}\n`;
+          }
+          if (line.trim()) {
+            parseLine(line);
+          }
         }
-      });
+      };
 
-      let stderrBuffer = '';
-      child.stderr.on('data', (chunk: Buffer) => {
-        const text = chunk.toString();
-        stderr += text;
-        stderrBuffer += text;
-        const lines = stderrBuffer.split(/\r\n|\r|\n/);
-        stderrBuffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (line.trim()) parseLine(line);
-        }
-      });
+      child.stdout.on('data', (c: Buffer) => feedStream(outBuf, c, false));
+      child.stderr.on('data', (c: Buffer) => feedStream(errBuf, c, true));
+
+      if (isClipDownload) {
+        clipHeartbeat = setInterval(() => {
+          if (child.killed) {
+            return;
+          }
+          if (Date.now() - lastProgressEmitAt < 2500) {
+            return;
+          }
+
+          const written = sumStreamingBytesForDownload(tempDir, downloadDir, request.id);
+          if (written > lastPartBytes && written > 0) {
+            lastPartBytes = written;
+            const pct = Math.min(88, 18 + Math.log10(written + 1) * 12);
+            emit({
+              id: request.id,
+              phase: 'downloading',
+              percent: Math.round(Math.max(pct, lastShownPercent)),
+              speed: '',
+              eta: '',
+              message: `${progressLabel}: ${formatBytesForProgress(written)} written…`,
+            });
+            return;
+          }
+
+          const pct = Math.min(86, Math.max(lastShownPercent + 4, 8));
+          emit({
+            id: request.id,
+            phase: 'downloading',
+            percent: pct,
+            speed: '',
+            eta: '',
+            message: 'Downloading clip…',
+          });
+        }, 1500);
+      }
 
       const timeoutHandle = setTimeout(() => {
         if (!child.killed) {
+          clearClipHeartbeat();
           const pid = child.pid;
           if (pid != null) {
             treeKill(pid, 'SIGKILL', () => {});
@@ -239,6 +542,7 @@ export class YtDlpDownloadService {
 
       child.on('error', (err) => {
         clearTimeout(timeoutHandle);
+        clearClipHeartbeat();
         this.activeProcesses.delete(request.id);
         onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: err.message });
         resolve({ id: request.id, success: false, outputPath: null, error: err.message });
@@ -246,12 +550,16 @@ export class YtDlpDownloadService {
 
       child.on('close', (exitCode, signal) => {
         clearTimeout(timeoutHandle);
-        this.activeProcesses.delete(request.id);
+        clearClipHeartbeat();
 
-        if (stdoutBuffer.trim()) parseLine(stdoutBuffer.trim());
-        if (stderrBuffer.trim()) parseLine(stderrBuffer.trim());
-        stdoutBuffer = '';
-        stderrBuffer = '';
+        if (outBuf.s.trim()) {
+          parseLine(outBuf.s);
+        }
+        if (errBuf.s.trim()) {
+          parseLine(errBuf.s);
+        }
+
+        this.activeProcesses.delete(request.id);
 
         const userCancelled = this.userCancelledDownloadIds.delete(request.id);
         if (userCancelled || signal === 'SIGTERM' || signal === 'SIGKILL') {
@@ -331,6 +639,11 @@ export class YtDlpDownloadService {
       '--ignore-config',
       '--js-runtimes', 'node',
       '--no-playlist', '--newline', '--no-warnings', '--progress',
+      /** Plain output helps regex; stderr is where `[download]` progress usually goes when piped. */
+      '--color', 'stderr:never',
+      '--color', 'stdout:never',
+      /** Emit progress periodically so piped output isn’t block-buffered for too long. */
+      '--progress-delta', '0.25',
       '--print', 'after_move:filepath',
       '-P', `temp:${tempDir}`,
       '-o', outputTemplate,
@@ -344,6 +657,10 @@ export class YtDlpDownloadService {
 
     if (ffmpegPath && existsSync(ffmpegPath)) {
       args.push('--ffmpeg-location', ffmpegPath);
+    }
+
+    if (this.requiresPartialSectionDownload(request)) {
+      args.push('--concurrent-fragments', String(SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS));
     }
 
     args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
@@ -369,8 +686,63 @@ export class YtDlpDownloadService {
       }
     }
 
+    args.push(...this.buildDownloadSectionsArgs(request, ffmpegPath));
+
     args.push(request.url);
     return args;
+  }
+
+  private isFullSpanDownloadSection(start: number, end: number, duration: number): boolean {
+    return start <= DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC && end >= duration - DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC;
+  }
+
+  private requiresPartialSectionDownload(request: ItemDownloadRequest): boolean {
+    const dur = request.durationSeconds;
+    if (dur == null || dur <= 0) {
+      return false;
+    }
+    const start = request.sectionStartSec ?? 0;
+    const end = request.sectionEndSec ?? dur;
+    return !this.isFullSpanDownloadSection(start, end, dur);
+  }
+
+  private buildDownloadSectionsArgs(request: ItemDownloadRequest, ffmpegPath: string | null): string[] {
+    if (!this.requiresPartialSectionDownload(request)) {
+      return [];
+    }
+    if (!ffmpegPath || !existsSync(ffmpegPath)) {
+      return [];
+    }
+    const dur = request.durationSeconds!;
+    const start = request.sectionStartSec ?? 0;
+    const end = request.sectionEndSec ?? dur;
+    const spec = this.buildDownloadSectionSpec(start, end, dur);
+    return ['--download-sections', spec];
+  }
+
+  private buildDownloadSectionSpec(start: number, end: number, duration: number): string {
+    const startStr = this.formatYtDlpSectionTimestamp(start);
+    const endStr = this.isFullSpanDownloadSection(0, end, duration)
+      ? 'inf'
+      : this.formatYtDlpSectionTimestamp(end);
+    return `*${startStr}-${endStr}`;
+  }
+
+  /** yt-dlp `--download-sections` time form (see README): `*start-end` with `inf` allowed. */
+  private formatYtDlpSectionTimestamp(seconds: number): string {
+    const s = Math.max(0, seconds);
+    const whole = Math.floor(s);
+    const frac = Math.round((s - whole) * 1000) / 1000;
+    const total = whole + frac;
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total - h * 3600 - m * 60;
+    const secStr =
+      Math.abs(sec - Math.floor(sec)) > 0.001 ? sec.toFixed(3).replace(/\.?0+$/, '') : String(Math.floor(sec)).padStart(2, '0');
+    if (h > 0) {
+      return `${h}:${String(m).padStart(2, '0')}:${secStr}`;
+    }
+    return `${m}:${secStr}`;
   }
 
   private buildSelectionArgs(request: ItemDownloadRequest): string[] {

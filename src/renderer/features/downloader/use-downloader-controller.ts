@@ -49,6 +49,12 @@ export interface QueueCard {
   audioOnly: boolean;
   audioPreference: AudioPreference;
   allowReencodeFallback: boolean;
+  /** From metadata; section UI hidden when null or ≤ 0. */
+  durationSeconds: number | null;
+  /** Inclusive start (seconds) for `--download-sections`. */
+  clipStartSec: number;
+  /** End time (seconds); defaults to full duration when unknown. */
+  clipEndSec: number;
 }
 
 interface DownloaderFormState {
@@ -207,6 +213,8 @@ export const useDownloaderController = () => {
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activityMessage, setActivityMessage] = useState<string | null>(null);
+  /** Queue item id whose partial-download timeline is expanded (thumbnail toggle). */
+  const [sectionTimelineOpenId, setSectionTimelineOpenId] = useState<string | null>(null);
 
   useEffect(() => {
     queueItemsRef.current = queueItems;
@@ -345,7 +353,12 @@ export const useDownloaderController = () => {
       setActiveValidationUrl(nextActive.normalizedUrl);
       const nextMetadata = await yoinkrClient.downloader.getMetadata(nextActive.normalizedUrl);
       setMetadata(nextMetadata);
-      setActivityMessage(`Metadata preview ready for ${nextMetadata.extractor}.`);
+      const d = nextMetadata.durationSeconds;
+      setActivityMessage(
+        d != null && d > 0
+          ? `Metadata preview ready for ${nextMetadata.extractor}. Click the thumbnail in the queue to trim the download.`
+          : `Metadata preview ready for ${nextMetadata.extractor}.`,
+      );
       return nextMetadata;
     } catch (metadataError) {
       setError(metadataError instanceof Error ? metadataError.message : 'Unable to load metadata.');
@@ -377,6 +390,7 @@ export const useDownloaderController = () => {
         remuxIfPossible: true,
         allowReencodeFallback: form.allowReencodeFallback,
       });
+      const dur = nextMetadata?.durationSeconds ?? null;
       setQueueItems((current) => [
         {
           id: draft.id,
@@ -396,6 +410,9 @@ export const useDownloaderController = () => {
           audioOnly: draft.audioOnly,
           audioPreference: form.audioPreference,
           allowReencodeFallback: form.allowReencodeFallback,
+          durationSeconds: dur,
+          clipStartSec: 0,
+          clipEndSec: dur != null && dur > 0 ? dur : 0,
         },
         ...current,
       ]);
@@ -437,7 +454,19 @@ export const useDownloaderController = () => {
 
   const updateQueueItem = (
     id: string,
-    patch: Partial<Pick<QueueCard, 'mediaType' | 'fileType' | 'qualityTarget' | 'audioOnly' | 'audioPreference' | 'allowReencodeFallback'>>,
+    patch: Partial<
+      Pick<
+        QueueCard,
+        | 'mediaType'
+        | 'fileType'
+        | 'qualityTarget'
+        | 'audioOnly'
+        | 'audioPreference'
+        | 'allowReencodeFallback'
+        | 'clipStartSec'
+        | 'clipEndSec'
+      >
+    >,
   ): void => {
     setQueueItems((current) =>
       current.map((item) => {
@@ -507,6 +536,9 @@ export const useDownloaderController = () => {
         audioOnly: r.mediaType === 'audio-only',
         audioPreference: 'aac' as AudioPreference,
         allowReencodeFallback: false,
+        durationSeconds: null,
+        clipStartSec: 0,
+        clipEndSec: 0,
       }));
       if (historyCards.length > 0) {
         setQueueItems((current) => {
@@ -569,6 +601,9 @@ export const useDownloaderController = () => {
         audioPreference: item.audioPreference,
         allowReencodeFallback: item.allowReencodeFallback,
         title: item.title,
+        durationSeconds: item.durationSeconds,
+        sectionStartSec: item.clipStartSec,
+        sectionEndSec: item.clipEndSec,
       });
 
       setQueueItems((current) =>
@@ -660,6 +695,10 @@ export const useDownloaderController = () => {
     setActivityMessage(message);
   };
 
+  const toggleSectionTimeline = useCallback((id: string): void => {
+    setSectionTimelineOpenId((current) => (current === id ? null : id));
+  }, []);
+
   return {
     form,
     validation,
@@ -674,6 +713,8 @@ export const useDownloaderController = () => {
     isLoadingMetadata,
     error,
     activityMessage,
+    sectionTimelineOpenId,
+    toggleSectionTimeline,
     updateField,
     validateUrls,
     inspectUrl,
