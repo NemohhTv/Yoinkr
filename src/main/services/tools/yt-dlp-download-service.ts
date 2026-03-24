@@ -110,7 +110,7 @@ const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
  * Parallel fragment downloads for DASH/HLS (YouTube, etc.). Section clips still pull many fragments;
  * concurrency reduces wall-clock time vs strictly sequential fetches.
  */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 8;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 16;
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
@@ -493,7 +493,7 @@ export class YtDlpDownloadService {
           const written = sumStreamingBytesForDownload(tempDir, downloadDir, request.id);
           if (written > lastPartBytes && written > 0) {
             lastPartBytes = written;
-            const pct = Math.min(88, 18 + Math.log10(written + 1) * 12);
+            const pct = Math.min(97, 20 + Math.log10(written + 1) * 14);
             emit({
               id: request.id,
               phase: 'downloading',
@@ -505,7 +505,7 @@ export class YtDlpDownloadService {
             return;
           }
 
-          const pct = Math.min(86, Math.max(lastShownPercent + 4, 8));
+          const pct = Math.min(96, Math.max(lastShownPercent + 3, 10));
           emit({
             id: request.id,
             phase: 'downloading',
