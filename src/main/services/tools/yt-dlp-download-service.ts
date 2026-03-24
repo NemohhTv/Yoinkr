@@ -240,10 +240,7 @@ export class YtDlpDownloadService {
 
     const mainArgs = this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings);
     let result = await runAttempt(mainArgs);
-    if (
-      !result.success &&
-      result.error?.includes('Requested format is not available')
-    ) {
+    if (!result.success && this.isFormatNotAvailableError(result.error)) {
       result = await runAttempt(
         this.buildArgs(
           request,
@@ -255,7 +252,19 @@ export class YtDlpDownloadService {
         ),
       );
     }
+    if (!result.success && this.isFormatNotAvailableError(result.error)) {
+      result = await runAttempt(
+        this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, this.buildLastResortSelectionArgs(request)),
+      );
+    }
     return result;
+  }
+
+  private isFormatNotAvailableError(message: string | null | undefined): boolean {
+    if (!message) {
+      return false;
+    }
+    return message.toLowerCase().includes('requested format is not available');
   }
 
   private buildArgs(
@@ -323,19 +332,15 @@ export class YtDlpDownloadService {
       sortFields.push(...this.getContainerSortBias(request.outputFormat, false, request.audioPreference));
     } else {
       /**
-       * Merge video+audio: prefer plain `bestvideo+bestaudio` first (YouTube-friendly), then wildcards.
-       * Do **not** add `-S vext:mp4` / `aext:m4a` here — that still breaks many YouTube merges
-       * ("Requested format is not available") even with Best + MP4 + AAC; `--remux-video mp4` handles
-       * the final container after download.
+       * Merge video+audio: keep the `-f` chain short and YouTube-stable. Long slash chains with
+       * `bestvideo*` / `bv*+ba` variants still fail on some videos ("Requested format is not available").
+       * `--remux-video mp4` (below) handles MP4; do not add `-S vext:mp4` / `aext:m4a` here.
        */
-      selectors.push(
-        heightFilter
-          ? `bestvideo[height<=${heightFilter}]+bestaudio/bestvideo*[height<=${heightFilter}]+bestaudio/best[height<=${heightFilter}]/bestvideo+bestaudio/bestvideo*+bestaudio/best`
-          : 'bestvideo+bestaudio/bestvideo*+bestaudio/bv*+ba/bestvideo+bestaudio/best',
-      );
-
       if (heightFilter) {
+        selectors.push(`bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`);
         sortFields.push(`res:${heightFilter}`);
+      } else {
+        selectors.push('bestvideo+bestaudio/best');
       }
     }
 
@@ -349,8 +354,7 @@ export class YtDlpDownloadService {
   }
 
   /**
-   * Minimal `-f` with no `-S` container bias — used when the primary selection fails with
-   * "Requested format is not available" (e.g. edge cases or extractor quirks).
+   * Second attempt: `bv*+ba` is the usual DASH merge pair; `/best` single progressive if needed.
    */
   private buildFallbackSelectionArgs(request: ItemDownloadRequest): string[] {
     const heightFilter = this.getHeightFilter(request.qualityTarget);
@@ -364,9 +368,22 @@ export class YtDlpDownloadService {
       return ['-f', sel];
     }
     const sel = heightFilter
-      ? `bestvideo[height<=${heightFilter}]+bestaudio/best+bestvideo+bestaudio/best`
-      : 'bestvideo+bestaudio/best';
+      ? `bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/best`
+      : 'bv*+ba/bestvideo+bestaudio/best';
     return ['-f', sel];
+  }
+
+  /**
+   * Last resort: combined `best` stream (often lower quality but almost always available).
+   */
+  private buildLastResortSelectionArgs(request: ItemDownloadRequest): string[] {
+    if (request.mediaType === 'audio-only' || request.audioOnly) {
+      return ['-f', 'bestaudio/best'];
+    }
+    if (request.mediaType === 'video-only') {
+      return ['-f', 'best/bestvideo/best'];
+    }
+    return ['-f', 'best'];
   }
 
   private getHeightFilter(quality: ItemDownloadRequest['qualityTarget']): number | null {
