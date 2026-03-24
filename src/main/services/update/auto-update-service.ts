@@ -1,6 +1,3 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { BrowserWindow, app } from 'electron';
 import electronUpdater from 'electron-updater';
 
@@ -9,6 +6,13 @@ import type { UpdateStatusPayload } from '@shared/types/update';
 
 /** `electron-updater` is CJS; default import avoids ESM named-export errors in packaged `out/main`. */
 const { autoUpdater } = electronUpdater;
+
+/** Same target as `build.publish` — explicit feed so updates work even without `resources/app-update.yml` (local `npm run dist` often omits that file; CI embeds it). */
+const GITHUB_RELEASE_FEED = {
+  provider: 'github' as const,
+  owner: 'NemohhTv',
+  repo: 'Yoinkr',
+};
 
 let snapshot: UpdateStatusPayload = { phase: 'idle' };
 let updaterEnabled = false;
@@ -24,15 +28,7 @@ function setSnapshot(patch: Partial<UpdateStatusPayload>): void {
   broadcast();
 }
 
-function isMissingUpdateMetadataError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return msg.includes('ENOENT') && msg.includes('app-update.yml');
-}
-
 function normalizeUpdateError(err: unknown): string {
-  if (isMissingUpdateMetadataError(err)) {
-    return '';
-  }
   return err instanceof Error ? err.message : String(err);
 }
 
@@ -69,8 +65,8 @@ export function isUpdaterEnabled(): boolean {
 }
 
 /**
- * GitHub Releases + electron-builder: `app-update.yml` lives in `resources` for published installers.
- * Plain `win-unpacked` builds often omit it — skip the updater instead of surfacing ENOENT.
+ * NSIS-installed builds: always set the GitHub feed explicitly so updates work whether or not
+ * `app-update.yml` was embedded (CI publishes embed it; local installers from `release/` often do not).
  */
 export function initializeAutoUpdater(): void {
   if (!app.isPackaged) {
@@ -91,15 +87,7 @@ export function initializeAutoUpdater(): void {
     return;
   }
 
-  const updateConfigPath = join(process.resourcesPath, 'app-update.yml');
-  if (!existsSync(updateConfigPath)) {
-    setSnapshot({
-      phase: 'disabled',
-      disabledReason: 'Unpackaged build',
-    });
-    updaterEnabled = false;
-    return;
-  }
+  autoUpdater.setFeedURL(GITHUB_RELEASE_FEED);
 
   updaterEnabled = true;
   autoUpdater.autoDownload = false;
@@ -128,15 +116,6 @@ export function initializeAutoUpdater(): void {
   });
 
   autoUpdater.on('error', (err) => {
-    if (isMissingUpdateMetadataError(err)) {
-      updaterEnabled = false;
-      setSnapshot({
-        phase: 'disabled',
-        disabledReason: 'Unpackaged build',
-        error: undefined,
-      });
-      return;
-    }
     setSnapshot({
       phase: 'error',
       error: normalizeUpdateError(err) || 'Update error',
@@ -161,15 +140,6 @@ export function initializeAutoUpdater(): void {
 
   setTimeout(() => {
     void autoUpdater.checkForUpdates().catch((err) => {
-      if (isMissingUpdateMetadataError(err)) {
-        updaterEnabled = false;
-        setSnapshot({
-          phase: 'disabled',
-          disabledReason: 'Unpackaged build',
-          error: undefined,
-        });
-        return;
-      }
       const text = normalizeUpdateError(err);
       if (text) {
         setSnapshot({
