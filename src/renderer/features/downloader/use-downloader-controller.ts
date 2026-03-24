@@ -21,6 +21,7 @@ const mediaTypeToOutputFormat: Record<DownloadMediaType, OutputFormat[]> = {
   'audio-only': ['mp3', 'm4a', 'wav', 'flac'],
 };
 
+/** Defaults: MP4 + AAC — matches m4a DASH preference + copy remux when yt-dlp selects AAC audio. */
 const initialForm = {
   urlInput: '',
   mediaType: 'video-audio' as DownloadMediaType,
@@ -645,7 +646,18 @@ export const useDownloaderController = () => {
         };
         yoinkrClient.downloader.saveHistory(historyRecord).catch(() => {});
       } else {
-        setError(result.error ?? 'Download failed.');
+        const failMsg = result.error ?? 'Download failed.';
+        if (failMsg === 'Download cancelled.') {
+          setError(null);
+          clearPostDownloadActivityTimer();
+          setActivityMessage('Download cancelled.');
+          postDownloadActivityTimeoutRef.current = setTimeout(() => {
+            setActivityMessage(null);
+            postDownloadActivityTimeoutRef.current = null;
+          }, POST_DOWNLOAD_ACTIVITY_MS);
+        } else {
+          setError(failMsg);
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Download failed.';
@@ -666,11 +678,16 @@ export const useDownloaderController = () => {
           q.id === id ? { ...q, status: 'error' as const, progressPercent: 0, progressMessage: 'Cancelled' } : q,
         ),
       );
+      clearPostDownloadActivityTimer();
       setActivityMessage('Download cancelled.');
+      postDownloadActivityTimeoutRef.current = setTimeout(() => {
+        setActivityMessage(null);
+        postDownloadActivityTimeoutRef.current = null;
+      }, POST_DOWNLOAD_ACTIVITY_MS);
     } catch {
       setError('Could not cancel download.');
     }
-  }, []);
+  }, [clearPostDownloadActivityTimer]);
 
   const revealFile = useCallback(async (outputPath: string): Promise<void> => {
     try {

@@ -99,6 +99,7 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
         ) : (
           queueItems.map((item) => {
             const isActive = item.status === 'downloading' || item.status === 'merging' || item.status === 'converting';
+            const isPostDownload = item.status === 'merging' || item.status === 'converting';
             const fileTypes =
               item.mediaType === 'audio-only'
                 ? (['mp3', 'm4a', 'wav', 'flac'] as const)
@@ -113,7 +114,9 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
             const hideProgressDetail =
               !progressMsgRaw ||
               /^Starting\b/i.test(progressMsgRaw) ||
-              /^Downloading( clip)?\.\.\.?\s*$/i.test(progressMsgRaw);
+              /^Downloading( clip)?\.\.\.?\s*$/i.test(progressMsgRaw) ||
+              // Same % as bold line; message often repeats yt-dlp's string (e.g. 64.7% vs rounded 65%)
+              /^(Download|Clip):\s*\d+(\.\d+)?%\s*$/i.test(progressMsgRaw);
 
             return (
               <div
@@ -170,11 +173,23 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
 
                   {isActive && (
                     <div className="dl-item-progress">
-                      <div className="dl-item-progress-track">
-                        <div className="dl-item-progress-fill" style={{ width: `${Math.max(2, downloadPct)}%` }} />
+                      <div
+                        className={`dl-item-progress-track${isPostDownload ? ' dl-item-progress-track--busy' : ''}`}
+                      >
+                        {isPostDownload ? (
+                          <div className="dl-item-progress-fill dl-item-progress-fill--busy" />
+                        ) : (
+                          <div className="dl-item-progress-fill" style={{ width: `${Math.max(2, downloadPct)}%` }} />
+                        )}
                       </div>
                       <span className="dl-item-progress-label">
-                        <span className="dl-item-progress-pct">Download: {downloadPct.toFixed(1)}%</span>
+                        <span className="dl-item-progress-pct">
+                          {isPostDownload
+                            ? item.status === 'converting'
+                              ? 'Encoding…'
+                              : 'Merging…'
+                            : `Download: ${downloadPct.toFixed(1)}%`}
+                        </span>
                         {!hideProgressDetail && (
                           <span className="dl-item-progress-detail"> · {progressMsgRaw}</span>
                         )}

@@ -228,8 +228,8 @@ export class YtDlpDownloadService {
       };
 
       const mergingMessage = isClipDownload
-        ? 'Clip streams received — merging / remuxing (ffmpeg)…'
-        : 'Download finished — merging / encoding final file (this step is often slow on long 4K videos).';
+        ? 'Combining clip streams…'
+        : 'Combining streams and writing the final file…';
 
       const parseLine = (line: string): void => {
         const clean = stripAnsi(line).trim();
@@ -400,10 +400,8 @@ export class YtDlpDownloadService {
             speed: '',
             eta: '',
             message: encodingLike
-              ? (isClipDownload
-                ? 'Clip encoding / remuxing (ffmpeg)…'
-                : 'Encoding / remuxing output (large files can take several more minutes)...')
-              : (isClipDownload ? 'Merging clip streams…' : 'Merging streams...'),
+              ? (isClipDownload ? 'Encoding clip…' : 'Encoding / remuxing…')
+              : (isClipDownload ? 'Merging clip…' : 'Merging streams…'),
           });
           return;
         }
@@ -419,7 +417,7 @@ export class YtDlpDownloadService {
               percent: 99,
               speed: '',
               eta: '',
-              message: isClipDownload ? `Clip remux / encode… ${ffmpegTime[1]}` : `Processing… ${ffmpegTime[1]}`,
+              message: `Output position: ${ffmpegTime[1]}`,
             });
           }
           return;
@@ -598,24 +596,39 @@ export class YtDlpDownloadService {
 
     });
 
-    const mainArgs = this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings);
-    let result = await runAttempt(mainArgs);
+    const tryM4aCopyRemux = this.prefersM4aDashAudio(request);
+
+    const runWithRemuxMode = (selection: string[] | undefined, mode: 'copy' | 'encode'): string[] =>
+      this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, selection, mode);
+
+    let result = await runAttempt(runWithRemuxMode(undefined, tryM4aCopyRemux ? 'copy' : 'encode'));
+    if (
+      !result.success &&
+      tryM4aCopyRemux &&
+      this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
+    ) {
+      result = await runAttempt(runWithRemuxMode(undefined, 'encode'));
+    }
+
     if (!result.success && this.isFormatNotAvailableError(result.error)) {
-      result = await runAttempt(
-        this.buildArgs(
-          request,
-          outputTemplate,
-          tempDir,
-          ffmpeg.resolvedPath,
-          settings,
-          this.buildFallbackSelectionArgs(request),
-        ),
-      );
+      result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'));
+      if (
+        !result.success &&
+        tryM4aCopyRemux &&
+        this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
+      ) {
+        result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), 'encode'));
+      }
     }
     if (!result.success && this.isFormatNotAvailableError(result.error)) {
-      result = await runAttempt(
-        this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, this.buildLastResortSelectionArgs(request)),
-      );
+      result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'));
+      if (
+        !result.success &&
+        tryM4aCopyRemux &&
+        this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
+      ) {
+        result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), 'encode'));
+      }
     }
     return result;
   }
@@ -627,6 +640,45 @@ export class YtDlpDownloadService {
     return message.toLowerCase().includes('requested format is not available');
   }
 
+  /** Copy-remux to MP4 failed (e.g. Opus audio) — retry with AAC encode. */
+  private shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(message: string | null | undefined): boolean {
+    if (!message) {
+      return false;
+    }
+    const m = message.toLowerCase();
+    if (m.includes('requested format is not available')) {
+      return false;
+    }
+    if (m.includes('cancelled')) {
+      return false;
+    }
+    return (
+      m.includes('postprocessing') ||
+      m.includes('post-processing') ||
+      m.includes('conversion failed') ||
+      m.includes('ffmpeg') ||
+      m.includes('mux') ||
+      m.includes('remux') ||
+      m.includes('merger') ||
+      m.includes('videoremuxer') ||
+      m.includes('error opening output') ||
+      m.includes('could not write header')
+    );
+  }
+
+  /**
+   * MP4 + AAC: YouTube DASH audio is often Opus → we must AAC-encode in VideoRemuxer (slow).
+   * Prefer **m4a** DASH audio when available so merge/remux is mostly stream-copy.
+   */
+  private prefersM4aDashAudio(request: ItemDownloadRequest): boolean {
+    return (
+      request.mediaType === 'video-audio' &&
+      !request.audioOnly &&
+      request.outputFormat === 'mp4' &&
+      request.audioPreference === 'aac'
+    );
+  }
+
   private buildArgs(
     request: ItemDownloadRequest,
     outputTemplate: string,
@@ -634,6 +686,8 @@ export class YtDlpDownloadService {
     ffmpegPath: string | null,
     settings: AppSettings,
     selectionOverride?: string[],
+    /** MP4 + AAC: try stream-copy first (m4a DASH); `encode` = Opus→AAC fallback. */
+    mp4AacRemuxMode: 'copy' | 'encode' = 'copy',
   ): string[] {
     const args: string[] = [
       '--ignore-config',
@@ -675,14 +729,19 @@ export class YtDlpDownloadService {
         request.audioPreference === 'aac'
       ) {
         /**
-         * YouTube DASH merges usually land in **WebM/MKV** first (Opus audio). `--remux-video mp4`
-         * stream-copies by default, so Opus ends up inside MP4 — bad for many Windows players.
+         * YouTube DASH merges usually land in **WebM/MKV** first. Prefer **m4a** audio (`prefersM4aDashAudio`)
+         * so **VideoRemuxer** can `-c:a copy` (fast). If audio is still Opus, download retries with encode.
          *
-         * Do **not** force AAC in `Merger+ffmpeg`: the intermediate container is often **WebM**, and
-         * AAC there fails ffmpeg ("Postprocessing: Conversion failed!"). Only override **VideoRemuxer**
-         * when writing the final MP4 (copy video, encode audio to AAC).
+         * Do **not** force AAC in `Merger+ffmpeg`: intermediate is often **WebM**. Only **VideoRemuxer**.
          */
-        args.push('--ppa', 'VideoRemuxer+ffmpeg:-c:v copy -c:a aac -b:a 192k');
+        if (mp4AacRemuxMode === 'copy') {
+          args.push('--ppa', 'VideoRemuxer+ffmpeg:-c:v copy -c:a copy');
+        } else {
+          args.push(
+            '--ppa',
+            'VideoRemuxer+ffmpeg:-c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
+          );
+        }
       }
     }
 
@@ -704,6 +763,20 @@ export class YtDlpDownloadService {
     const start = request.sectionStartSec ?? 0;
     const end = request.sectionEndSec ?? dur;
     return !this.isFullSpanDownloadSection(start, end, dur);
+  }
+
+  /**
+   * VP9/AV1 + stream-copy into MP4 after `--download-sections` often shows **all black** in Windows
+   * players; prefer AVC (`avc1`) when remuxing section clips to MP4.
+   */
+  private preferAvcForSectionMp4(request: ItemDownloadRequest): boolean {
+    if (request.outputFormat !== 'mp4') {
+      return false;
+    }
+    if (request.mediaType === 'audio-only' || request.audioOnly) {
+      return false;
+    }
+    return this.requiresPartialSectionDownload(request);
   }
 
   private buildDownloadSectionsArgs(request: ItemDownloadRequest, ffmpegPath: string | null): string[] {
@@ -759,27 +832,77 @@ export class YtDlpDownloadService {
         sortFields.push('acodec:opus', 'aext:webm');
       }
     } else if (request.mediaType === 'video-only') {
-      selectors.push(
-        heightFilter
-          ? `bestvideo[height<=${heightFilter}]/bestvideo*[height<=${heightFilter}]/bestvideo/best[height<=${heightFilter}]/best`
-          : 'bestvideo/bestvideo*/best',
-      );
+      if (this.preferAvcForSectionMp4(request)) {
+        selectors.push(
+          heightFilter
+            ? `bestvideo[vcodec^=avc1][height<=${heightFilter}]/bestvideo[vcodec^=avc][height<=${heightFilter}]/bestvideo[height<=${heightFilter}]/bestvideo/best`
+            : 'bestvideo[vcodec^=avc1]/bestvideo[vcodec^=avc]/bestvideo/best',
+        );
+        sortFields.push('vcodec:h264');
+        if (heightFilter) {
+          sortFields.push(`res:${heightFilter}`);
+        }
+      } else {
+        selectors.push(
+          heightFilter
+            ? `bestvideo[height<=${heightFilter}]/bestvideo*[height<=${heightFilter}]/bestvideo/best[height<=${heightFilter}]/best`
+            : 'bestvideo/bestvideo*/best',
+        );
 
-      if (heightFilter) {
-        sortFields.push(`res:${heightFilter}`);
+        if (heightFilter) {
+          sortFields.push(`res:${heightFilter}`);
+        }
       }
       sortFields.push(...this.getContainerSortBias(request.outputFormat, false, request.audioPreference));
     } else {
       /**
        * Merge video+audio: keep the `-f` chain short and YouTube-stable. Long slash chains with
        * `bestvideo*` / `bv*+ba` variants still fail on some videos ("Requested format is not available").
-       * `--remux-video mp4` (below) handles MP4; do not add `-S vext:mp4` / `aext:m4a` here.
+       * `--remux-video mp4` (below) handles MP4; avoid `-S vext:mp4` here (breaks some merges).
+       *
+       * For `--download-sections` + MP4, prefer AVC — VP9-in-MP4 stream-copy often plays as black on Windows.
+       *
+       * MP4 + AAC: prefer `bestaudio[ext=m4a]` + `-S aext:m4a` so DASH audio is often already AAC
+       * (mux/remux is much faster than Opus→AAC transcode).
        */
-      if (heightFilter) {
-        selectors.push(`bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`);
+      const m4a = this.prefersM4aDashAudio(request);
+      if (this.preferAvcForSectionMp4(request)) {
+        if (heightFilter) {
+          selectors.push(
+            m4a
+              ? `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bestvideo[vcodec^=avc][height<=${heightFilter}]+bestaudio/bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`
+              : `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bestvideo[vcodec^=avc][height<=${heightFilter}]+bestaudio/bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`,
+          );
+          sortFields.push(`res:${heightFilter}`, 'vcodec:h264');
+          if (m4a) {
+            sortFields.push('aext:m4a');
+          }
+        } else {
+          selectors.push(
+            m4a
+              ? 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best'
+              : 'bestvideo[vcodec^=avc1]+bestaudio/bestvideo[vcodec^=avc]+bestaudio/bestvideo+bestaudio/best',
+          );
+          sortFields.push('vcodec:h264');
+          if (m4a) {
+            sortFields.push('aext:m4a');
+          }
+        }
+      } else if (heightFilter) {
+        selectors.push(
+          m4a
+            ? `bestvideo[height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`
+            : `bestvideo[height<=${heightFilter}]+bestaudio/bestvideo+bestaudio/best`,
+        );
         sortFields.push(`res:${heightFilter}`);
+        if (m4a) {
+          sortFields.push('aext:m4a');
+        }
       } else {
-        selectors.push('bestvideo+bestaudio/best');
+        selectors.push(m4a ? 'bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best' : 'bestvideo+bestaudio/best');
+        if (m4a) {
+          sortFields.push('aext:m4a');
+        }
       }
     }
 
@@ -801,14 +924,36 @@ export class YtDlpDownloadService {
       return ['-f', 'bestaudio/best'];
     }
     if (request.mediaType === 'video-only') {
+      if (this.preferAvcForSectionMp4(request)) {
+        const sel = heightFilter
+          ? `bestvideo[vcodec^=avc1][height<=${heightFilter}]/bestvideo[vcodec^=avc][height<=${heightFilter}]/bestvideo/best`
+          : 'bestvideo[vcodec^=avc1]/bestvideo/best';
+        return ['-f', sel];
+      }
       const sel = heightFilter
         ? `bestvideo[height<=${heightFilter}]/bestvideo/best`
         : 'bestvideo/best';
       return ['-f', sel];
     }
+    if (this.preferAvcForSectionMp4(request)) {
+      const m4a = this.prefersM4aDashAudio(request);
+      const sel = heightFilter
+        ? m4a
+          ? `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio/best`
+          : `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio/best`
+        : m4a
+          ? `bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio/best`
+          : 'bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio/best';
+      return ['-f', sel];
+    }
+    const m4a = this.prefersM4aDashAudio(request);
     const sel = heightFilter
-      ? `bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/best`
-      : 'bv*+ba/bestvideo+bestaudio/best';
+      ? m4a
+        ? `bestvideo[height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/best`
+        : `bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/best`
+      : m4a
+        ? 'bestvideo+bestaudio[ext=m4a]/bv*+ba/bestvideo+bestaudio/best'
+        : 'bv*+ba/bestvideo+bestaudio/best';
     return ['-f', sel];
   }
 

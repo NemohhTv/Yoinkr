@@ -2102,6 +2102,26 @@ p {
   transition: width 300ms ease;
 }
 
+/* Mux / encode: download bytes are done — show activity instead of a stuck 99% bar */
+.dl-item-progress-track--busy {
+  position: relative;
+}
+
+.dl-item-progress-fill--busy {
+  width: 38%;
+  transition: none;
+  animation: dl-progress-busy-sweep 1.25s ease-in-out infinite;
+}
+
+@keyframes dl-progress-busy-sweep {
+  0% {
+    transform: translateX(-5%);
+  }
+  100% {
+    transform: translateX(165%);
+  }
+}
+
 .dl-item-progress-label {
   color: #94a3b8;
   font-size: 0.76rem;
