@@ -964,6 +964,7 @@ export class YtDlpDownloadService {
    */
   private buildFallbackSelectionArgs(request: ItemDownloadRequest): string[] {
     const heightFilter = this.getHeightFilter(request.qualityTarget);
+    const sectionDownload = this.requiresPartialSectionDownload(request);
     if (request.mediaType === 'audio-only' || request.audioOnly) {
       return ['-f', 'bestaudio/best'];
     }
@@ -977,6 +978,9 @@ export class YtDlpDownloadService {
       const sel = heightFilter
         ? `bestvideo[height<=${heightFilter}]/bestvideo/best`
         : 'bestvideo/best';
+      if (sectionDownload) {
+        return ['-f', 'bestvideo/bestvideo*'];
+      }
       return ['-f', sel];
     }
     if (this.preferAvcForSectionMp4(request)) {
@@ -988,6 +992,16 @@ export class YtDlpDownloadService {
         : m4a
           ? `bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio/best`
           : 'bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio/best';
+      if (sectionDownload) {
+        const sectionSel = heightFilter
+          ? m4a
+            ? `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio`
+            : `bestvideo[vcodec^=avc1][height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio`
+          : m4a
+            ? 'bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio'
+            : 'bestvideo[vcodec^=avc1]+bestaudio/bv*+ba/bestvideo+bestaudio';
+        return ['-f', sectionSel];
+      }
       return ['-f', sel];
     }
     const m4a = this.prefersM4aDashAudio(request);
@@ -998,6 +1012,16 @@ export class YtDlpDownloadService {
       : m4a
         ? 'bestvideo+bestaudio[ext=m4a]/bv*+ba/bestvideo+bestaudio/best'
         : 'bv*+ba/bestvideo+bestaudio/best';
+    if (sectionDownload) {
+      const sectionSel = heightFilter
+        ? m4a
+          ? `bestvideo[height<=${heightFilter}]+bestaudio[ext=m4a]/bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio`
+          : `bestvideo[height<=${heightFilter}]+bestaudio/bv*+ba/bestvideo+bestaudio`
+        : m4a
+          ? 'bestvideo+bestaudio[ext=m4a]/bv*+ba/bestvideo+bestaudio'
+          : 'bv*+ba/bestvideo+bestaudio';
+      return ['-f', sectionSel];
+    }
     return ['-f', sel];
   }
 
@@ -1005,11 +1029,18 @@ export class YtDlpDownloadService {
    * Last resort: combined `best` stream (often lower quality but almost always available).
    */
   private buildLastResortSelectionArgs(request: ItemDownloadRequest): string[] {
+    const sectionDownload = this.requiresPartialSectionDownload(request);
     if (request.mediaType === 'audio-only' || request.audioOnly) {
       return ['-f', 'bestaudio/best'];
     }
     if (request.mediaType === 'video-only') {
+      if (sectionDownload) {
+        return ['-f', 'bestvideo/bestvideo*'];
+      }
       return ['-f', 'best/bestvideo/best'];
+    }
+    if (sectionDownload) {
+      return ['-f', 'bv*+ba/bestvideo+bestaudio'];
     }
     return ['-f', 'best'];
   }
