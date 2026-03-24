@@ -26,8 +26,14 @@ const sanitizeDownloadDisplayName = (name: string): string => {
 };
 
 const PROGRESS_RE = /\[download\]\s+(\d+(?:\.\d+)?)%\s+of\s+~?\s*\S+\s+at\s+(.+?)\s+ETA\s+(\S+)/;
-const MERGE_RE = /\[Merger\]|\[Mux\]|\[FixupM|\[VideoRemuxer\]/;
-const CONVERT_RE = /\[ExtractAudio\]|\[FFmpeg\]/;
+/** yt-dlp post-processors (merge, remux, re-encode, embed, fixups). */
+const POSTPROCESS_TAG_RE =
+  /\[(?:Merger|Mux|VideoRemuxer|VideoConvertor|ExtractAudio|EmbedSubtitle|EmbedThumbnail|FFmpeg|FixupM[^\]]*)\]/i;
+/** ffmpeg progress while muxing/encoding (emitted on stderr during long remux). */
+const FFMPEG_TIME_RE = /\btime=(\d{2}:\d{2}:\d{2}\.\d{2})\b/;
+/** Large downloads + merge + AAC remux can exceed 30 minutes. */
+const DOWNLOAD_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const FFMPEG_PROGRESS_THROTTLE_MS = 450;
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
@@ -83,6 +89,8 @@ export class YtDlpDownloadService {
 
       let lastOutputPath: string | null = null;
       let stderr = '';
+      let inHeavyPostprocess = false;
+      let lastFfmpegProgressEmit = 0;
 
       const parseLine = (line: string): void => {
         const progressMatch = line.match(PROGRESS_RE);
@@ -98,39 +106,59 @@ export class YtDlpDownloadService {
           return;
         }
 
-        if (MERGE_RE.test(line)) {
+        const postTagMatch = line.match(POSTPROCESS_TAG_RE);
+        if (postTagMatch) {
+          inHeavyPostprocess = true;
+          const tag = postTagMatch[0].toLowerCase();
+          const encodingLike =
+            tag.includes('extractaudio') ||
+            tag.includes('videoconvertor') ||
+            tag.includes('videoremuxer') ||
+            tag.includes('ffmpeg') ||
+            tag.includes('embedsubtitle') ||
+            tag.includes('embedthumbnail');
+          onProgress({
+            id: request.id,
+            phase: encodingLike ? 'converting' : 'merging',
+            percent: 99,
+            speed: '',
+            eta: '',
+            message: encodingLike
+              ? 'Encoding / remuxing output (large files can take several more minutes)...'
+              : 'Merging streams...',
+          });
+          return;
+        }
+
+        const ffmpegTime = line.match(FFMPEG_TIME_RE);
+        if (ffmpegTime && inHeavyPostprocess) {
+          const now = Date.now();
+          if (now - lastFfmpegProgressEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
+            lastFfmpegProgressEmit = now;
+            onProgress({
+              id: request.id,
+              phase: 'converting',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: `Processing… ${ffmpegTime[1]}`,
+            });
+          }
+          return;
+        }
+
+        if (/\[download\][^\n]*\b100(?:\.\d+)?%/.test(line)) {
+          inHeavyPostprocess = true;
           onProgress({
             id: request.id,
             phase: 'merging',
             percent: 99,
             speed: '',
             eta: '',
-            message: 'Merging video and audio...',
+            message:
+              'Download finished — merging / encoding final file (this step is often slow on long 4K videos).',
           });
           return;
-        }
-
-        if (CONVERT_RE.test(line)) {
-          onProgress({
-            id: request.id,
-            phase: 'converting',
-            percent: 99,
-            speed: '',
-            eta: '',
-            message: 'Converting audio...',
-          });
-          return;
-        }
-
-        if (line.includes('[download] 100%')) {
-          onProgress({
-            id: request.id,
-            phase: 'downloading',
-            percent: 100,
-            speed: '',
-            eta: '',
-            message: 'Download complete, finalizing...',
-          });
         }
 
         const destMatch = line.match(/(?:Merging formats into|Destination:)\s+"?(.+?)"?\s*$/);
@@ -180,11 +208,12 @@ export class YtDlpDownloadService {
         if (!child.killed) {
           child.kill();
           rmSync(tempDir, { recursive: true, force: true });
-          const msg = 'Download timed out after 30 minutes.';
+          const hours = DOWNLOAD_TIMEOUT_MS / (60 * 60 * 1000);
+          const msg = `Download timed out after ${hours} hours.`;
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
           resolve({ id: request.id, success: false, outputPath: null, error: msg });
         }
-      }, 30 * 60 * 1000);
+      }, DOWNLOAD_TIMEOUT_MS);
 
       child.on('error', (err) => {
         clearTimeout(timeoutHandle);
