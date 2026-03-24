@@ -3,6 +3,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { yoinkrClient } from '@renderer/lib/api/yoinkr-client';
 import type { UpdateStatusPayload } from '@shared/types/update';
 
+const truncateStatus = (text: string, maxLen: number): string => {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  if (oneLine.length <= maxLen) {
+    return oneLine;
+  }
+  return `${oneLine.slice(0, maxLen - 1)}…`;
+};
+
 /** Short line for the sidebar strip (no long paths). */
 const statusLine = (status: UpdateStatusPayload): string => {
   switch (status.phase) {
@@ -21,10 +29,17 @@ const statusLine = (status: UpdateStatusPayload): string => {
     case 'downloaded':
       return 'Ready to install';
     case 'error':
-      return status.error?.includes('ENOENT') ? '—' : (status.error ?? 'Error');
+      return truncateStatus(status.error ?? 'Update error', 80);
     default:
       return '';
   }
+};
+
+const statusDetailTitle = (status: UpdateStatusPayload): string | undefined => {
+  if (status.phase === 'error' && status.error) {
+    return status.error;
+  }
+  return status.releaseNotes;
 };
 
 export const UpdateStatusBar = ({ appVersion }: { appVersion: string }): JSX.Element => {
@@ -64,7 +79,7 @@ export const UpdateStatusBar = ({ appVersion }: { appVersion: string }): JSX.Ele
   return (
     <div className="sidebar-update">
       <div className="sidebar-update__version">v{appVersion}</div>
-      <div className="sidebar-update__status" title={status.releaseNotes}>
+      <div className="sidebar-update__status" title={statusDetailTitle(status)}>
         {statusLine(status)}
       </div>
       <div className="sidebar-update__actions">

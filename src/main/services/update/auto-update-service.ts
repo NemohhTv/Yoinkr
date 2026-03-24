@@ -1,5 +1,9 @@
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { BrowserWindow, app } from 'electron';
 import electronUpdater from 'electron-updater';
+import type { AppUpdater } from 'electron-updater';
 
 import { ipcChannels } from '@shared/contracts/channels';
 import type { UpdateStatusPayload } from '@shared/types/update';
@@ -13,6 +17,31 @@ const GITHUB_RELEASE_FEED = {
   owner: 'NemohhTv',
   repo: 'Yoinkr',
 };
+
+/**
+ * electron-updater still reads `app-update.yml` for `updaterCacheDirName` (and optional
+ * `publisherName`) when downloading — even if `setFeedURL()` is used for the provider.
+ * Installs that omit `resources/app-update.yml` then fail at download with ENOENT; the UI used to
+ * hide those errors. We point the updater at a small file under userData instead.
+ *
+ * Omit `publisherName` so unsigned NSIS builds are not rejected by signature verification.
+ */
+const LOCAL_UPDATE_YML = `provider: github
+owner: ${GITHUB_RELEASE_FEED.owner}
+repo: ${GITHUB_RELEASE_FEED.repo}
+updaterCacheDirName: yoinkr-updater
+`;
+
+function writeLocalUpdaterConfigPath(): string | null {
+  try {
+    const configPath = join(app.getPath('userData'), 'yoinkr-updater.yml');
+    writeFileSync(configPath, LOCAL_UPDATE_YML, 'utf8');
+    return configPath;
+  } catch (err) {
+    console.warn('[Yoinkr] Could not write local updater config:', err);
+    return null;
+  }
+}
 
 let snapshot: UpdateStatusPayload = { phase: 'idle' };
 let updaterEnabled = false;
@@ -87,6 +116,11 @@ export function initializeAutoUpdater(): void {
     return;
   }
 
+  const localConfigPath = writeLocalUpdaterConfigPath();
+  if (localConfigPath) {
+    (autoUpdater as AppUpdater).updateConfigPath = localConfigPath;
+  }
+  /** Must run after `updateConfigPath` — that setter clears `clientPromise`. */
   autoUpdater.setFeedURL(GITHUB_RELEASE_FEED);
 
   updaterEnabled = true;
