@@ -306,16 +306,14 @@ export class YtDlpDownloadService {
         request.audioPreference === 'aac'
       ) {
         /**
-         * YouTube's merged DASH pair is often VP9/AV1 + Opus in WebM/MKV. `--remux-video mp4` only
-         * stream-copies, so audio stays Opus inside MP4 — unsupported in many Windows players.
-         * These ffmpeg overrides re-encode audio to AAC while copying video.
+         * YouTube DASH merges usually land in **WebM/MKV** first (Opus audio). `--remux-video mp4`
+         * stream-copies by default, so Opus ends up inside MP4 — bad for many Windows players.
+         *
+         * Do **not** force AAC in `Merger+ffmpeg`: the intermediate container is often **WebM**, and
+         * AAC there fails ffmpeg ("Postprocessing: Conversion failed!"). Only override **VideoRemuxer**
+         * when writing the final MP4 (copy video, encode audio to AAC).
          */
-        args.push(
-          '--ppa',
-          'Merger+ffmpeg:-c:v copy -c:a aac -b:a 192k',
-          '--ppa',
-          'VideoRemuxer+ffmpeg:-c:v copy -c:a aac -b:a 192k',
-        );
+        args.push('--ppa', 'VideoRemuxer+ffmpeg:-c:v copy -c:a aac -b:a 192k');
       }
     }
 
