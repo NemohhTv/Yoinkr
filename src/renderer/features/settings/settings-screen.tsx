@@ -186,7 +186,7 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
           <p className="eyebrow">Settings</p>
           <h1>Desktop defaults</h1>
           <p className="muted">
-            Settings persist through SQLite in Phase 1 while the controller layer keeps file pickers and tool discovery out of the UI components.
+            Configure download and export folders, bundled tools, cookies, and download behavior. Use <strong>Save settings</strong> at the bottom of this page to persist changes.
           </p>
         </div>
 
