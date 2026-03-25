@@ -42,6 +42,29 @@ Official builds live on **[GitHub Releases](https://github.com/NemohhTv/Yoinkr/r
 
 ---
 
+## Cookies for restricted sites (Settings)
+
+Yoinkr can pass **your** session cookies to **yt-dlp** so age-restricted or members-only URLs work when you are allowed to watch them in a browser. Configure this under **Settings → YouTube & restricted sites (cookies)**.
+
+### Recommended: `cookies.txt` file
+
+1. Install **[Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)** from the Chrome Web Store (exports Netscape-format `cookies.txt`; it does not send cookies off your machine).
+2. In Chrome, **sign in** to the site you need (e.g. open [youtube.com](https://www.youtube.com) while logged in).
+3. Stay on that site (or the tab you care about), open the extension, and **export** / save a **Netscape** `cookies.txt` file to a folder you control.
+4. In Yoinkr **Settings**, set **Cookie source** to **Cookies.txt file (recommended)**.
+5. Click **Browse…** and choose that `cookies.txt`, then scroll down and click **Save settings** so the path is stored.
+6. Click **Validate cookie source** to confirm Yoinkr can read it. If it passes, try your download again.
+
+### Alternative: paste the file
+
+Set **Cookie source** to **Paste cookies.txt text**, paste the **entire** exported file (including the `# Netscape` header lines), **Save settings**, then **Validate cookie source**.
+
+### Browser mode (optional)
+
+**Browser** reads cookies from a browser profile on disk. **Fully quit that browser first** before downloading. On **Windows**, Chrome/Edge store cookies in a way yt-dlp often cannot use; prefer **Cookies.txt file** for Chrome/Edge, or use **Firefox** with browser mode if you rely on that path.
+
+---
+
 ## Development
 
 **Prerequisites:** Node.js LTS, **Windows** (primary target).
