@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import type { WriteStream } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import treeKill from 'tree-kill';
 
@@ -200,6 +201,35 @@ export class YtDlpDownloadService {
     const runAttempt = (
       args: string[],
     ): Promise<ItemDownloadResult> => new Promise<ItemDownloadResult>((resolve) => {
+      const logsDownloadsDir = join(this.pathsService.getPaths().managedDirectories.logs, 'downloads');
+      let downloadLogStream: WriteStream | null = null;
+      if (settings.saveDownloadLogs) {
+        try {
+          mkdirSync(logsDownloadsDir, { recursive: true });
+          const safeTime = new Date().toISOString().replace(/[:.]/g, '-');
+          const logPath = join(logsDownloadsDir, `${request.id.slice(0, 8)}-${safeTime}.log`);
+          downloadLogStream = createWriteStream(logPath, { flags: 'a' });
+          downloadLogStream.write(
+            `# Yoinkr yt-dlp session log\n# id=${request.id}\n# url=${request.url}\n# started=${new Date().toISOString()}\n\n`,
+          );
+        } catch {
+          downloadLogStream = null;
+        }
+      }
+
+      const endDownloadLog = (footer: string): void => {
+        if (!downloadLogStream) {
+          return;
+        }
+        try {
+          downloadLogStream.write(`\n${footer}\n`);
+          downloadLogStream.end();
+        } catch {
+          /* ignore */
+        }
+        downloadLogStream = null;
+      };
+
       const child = spawn(ytDlp.resolvedPath!, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -226,6 +256,8 @@ export class YtDlpDownloadService {
       let lastShownPercent = 0;
       let lastPartBytes = 0;
       let clipHeartbeat: ReturnType<typeof setInterval> | null = null;
+      let lastSubstantiveStderrAt = Date.now();
+      let clipFinalizingHintEmitted = false;
 
       const emit = (p: ItemDownloadProgress): void => {
         lastProgressEmitAt = Date.now();
@@ -402,6 +434,42 @@ export class YtDlpDownloadService {
           return;
         }
 
+        const ffmpegTimeEarly = clean.match(FFMPEG_TIME_RE);
+        const ffmpegStderrLooksActive =
+          ffmpegTimeEarly != null ||
+          /\bframe=\s*\d+/i.test(clean) ||
+          /\[ffmpeg\]/i.test(clean) ||
+          /\bPress \[q\] to stop/i.test(clean);
+
+        if (ffmpegStderrLooksActive) {
+          if (!inHeavyPostprocess) {
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'converting',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: isClipDownload ? 'Finalizing clip (ffmpeg)…' : 'Processing output (ffmpeg)…',
+            });
+          }
+          if (ffmpegTimeEarly) {
+            const now = Date.now();
+            if (now - lastFfmpegProgressEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
+              lastFfmpegProgressEmit = now;
+              emit({
+                id: request.id,
+                phase: 'converting',
+                percent: 99,
+                speed: '',
+                eta: '',
+                message: `Output position: ${ffmpegTimeEarly[1]}`,
+              });
+            }
+          }
+          return;
+        }
+
         const postTagMatch = clean.match(POSTPROCESS_TAG_RE);
         if (postTagMatch) {
           inHeavyPostprocess = true;
@@ -423,23 +491,6 @@ export class YtDlpDownloadService {
               ? (isClipDownload ? 'Encoding clip…' : 'Encoding / remuxing…')
               : (isClipDownload ? 'Merging clip…' : 'Merging streams…'),
           });
-          return;
-        }
-
-        const ffmpegTime = clean.match(FFMPEG_TIME_RE);
-        if (ffmpegTime && inHeavyPostprocess) {
-          const now = Date.now();
-          if (now - lastFfmpegProgressEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
-            lastFfmpegProgressEmit = now;
-            emit({
-              id: request.id,
-              phase: 'converting',
-              percent: 99,
-              speed: '',
-              eta: '',
-              message: `Output position: ${ffmpegTime[1]}`,
-            });
-          }
           return;
         }
 
@@ -491,6 +542,21 @@ export class YtDlpDownloadService {
           acc.s = acc.s.slice(idx + 1);
           if (accumulateStderr) {
             stderr += `${line}\n`;
+            if (downloadLogStream && line.length > 0) {
+              downloadLogStream.write(`${line}\n`);
+            }
+            const tl = line.toLowerCase();
+            if (
+              tl.includes('[download]') ||
+              tl.includes('[merger') ||
+              tl.includes('ffmpeg') ||
+              tl.includes('[mux') ||
+              tl.includes('remux') ||
+              tl.includes('[fixup') ||
+              tl.includes('[videoremuxer')
+            ) {
+              lastSubstantiveStderrAt = Date.now();
+            }
           }
           if (line.trim()) {
             parseLine(line);
@@ -525,6 +591,25 @@ export class YtDlpDownloadService {
             return;
           }
 
+          if (
+            isClipDownload &&
+            !clipFinalizingHintEmitted &&
+            lastShownPercent >= 96 &&
+            Date.now() - lastSubstantiveStderrAt > 20000
+          ) {
+            clipFinalizingHintEmitted = true;
+            inHeavyPostprocess = true;
+            emit({
+              id: request.id,
+              phase: 'merging',
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: 'Finalizing clip… (quiet phase — may take a while on large sources)',
+            });
+            return;
+          }
+
           const pct = Math.min(99, Math.max(lastShownPercent + 2, 10));
           emit({
             id: request.id,
@@ -553,6 +638,7 @@ export class YtDlpDownloadService {
           rmSync(tempDir, { recursive: true, force: true });
           const hours = DOWNLOAD_TIMEOUT_MS / (60 * 60 * 1000);
           const msg = `Download timed out after ${hours} hours.`;
+          endDownloadLog(`# timeout after ${hours}h`);
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
           resolve({ id: request.id, success: false, outputPath: null, error: msg });
         }
@@ -561,6 +647,7 @@ export class YtDlpDownloadService {
       child.on('error', (err) => {
         clearTimeout(timeoutHandle);
         clearClipHeartbeat();
+        endDownloadLog(`# spawn/process error: ${err.message}`);
         this.activeProcesses.delete(request.id);
         onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: err.message });
         resolve({ id: request.id, success: false, outputPath: null, error: err.message });
@@ -576,6 +663,11 @@ export class YtDlpDownloadService {
         if (errBuf.s.trim()) {
           parseLine(errBuf.s);
         }
+        if (errBuf.s.trim() && downloadLogStream) {
+          downloadLogStream.write(`\n# --- stderr tail (unflushed) ---\n${errBuf.s}\n`);
+        }
+
+        endDownloadLog(`# exitCode=${exitCode ?? 'null'} signal=${signal ?? 'null'}`);
 
         this.activeProcesses.delete(request.id);
 

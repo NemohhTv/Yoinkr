@@ -25,6 +25,7 @@ const settingsSchema = z.object({
   backupBeforeReplace: z.boolean(),
   theme: z.literal('dark'),
   legalNoticeAccepted: z.boolean(),
+  saveDownloadLogs: z.boolean(),
 });
 
 export class SettingsValidator {

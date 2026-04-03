@@ -1,6 +1,7 @@
 export const ipcChannels = {
   appGetBootstrapState: 'app.getBootstrapState',
   appRevealPath: 'app.revealPath',
+  appOpenDownloadLogsDirectory: 'app.openDownloadLogsDirectory',
   settingsGet: 'settings.get',
   settingsUpdate: 'settings.update',
   settingsPickDirectory: 'settings.pickDirectory',

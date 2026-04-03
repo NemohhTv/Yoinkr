@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { app, ipcMain, shell } from 'electron';
 
@@ -42,5 +42,20 @@ export const registerAppIpc = (context: AppContext): void => {
     }
 
     return fail('FILE_NOT_FOUND', `File not found: ${targetPath}`);
+  });
+
+  ipcMain.handle(ipcChannels.appOpenDownloadLogsDirectory, async () => {
+    const logDir = join(context.pathsService.getPaths().managedDirectories.logs, 'downloads');
+    try {
+      mkdirSync(logDir, { recursive: true });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return fail('LOG_DIR_FAILED', message);
+    }
+    const errMsg = await shell.openPath(logDir);
+    if (errMsg) {
+      return fail('OPEN_FAILED', errMsg);
+    }
+    return ok(true);
   });
 };

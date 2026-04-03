@@ -11,6 +11,7 @@ const api: YoinkrApi = {
   app: {
     getBootstrapState: () => ipcRenderer.invoke(ipcChannels.appGetBootstrapState),
     revealPath: (targetPath) => ipcRenderer.invoke(ipcChannels.appRevealPath, targetPath),
+    openDownloadLogsDirectory: () => ipcRenderer.invoke(ipcChannels.appOpenDownloadLogsDirectory),
     resolveFilePath: (file) => webUtils.getPathForFile(file) || null,
   },
   settings: {

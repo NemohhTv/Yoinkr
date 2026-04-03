@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import type { BinaryStatus, DownloadableToolName } from '@shared/types/common';
 import type { AppSettings, YtDlpCookieMode } from '@shared/types/settings';
+import { yoinkrClient } from '@renderer/lib/api/yoinkr-client';
 import type { ToolDownloadState } from './use-settings-controller';
 
 interface SettingsController {
@@ -351,6 +352,31 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
 
         <div className="toggle-row">
           <label><input type="checkbox" checked={draft.backupBeforeReplace} onChange={(event) => controller.updateField('backupBeforeReplace', event.target.checked)} /> Backup originals before replace</label>
+        </div>
+
+        <div className="stack gap-sm">
+          <div className="toggle-row">
+            <label>
+              <input
+                type="checkbox"
+                checked={draft.saveDownloadLogs}
+                onChange={(event) => controller.updateField('saveDownloadLogs', event.target.checked)}
+              />{' '}
+              Save yt-dlp stderr to log files (helps debug slow or stuck downloads)
+            </label>
+          </div>
+          <div className="button-row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="button secondary compact"
+              onClick={() => void yoinkrClient.app.openDownloadLogsDirectory()}
+            >
+              Open download logs folder
+            </button>
+            <span className="muted" style={{ fontSize: '0.82rem', flex: '1 1 200px' }}>
+              One .log file per download attempt under your Yoinkr data → logs → downloads.
+            </span>
+          </div>
         </div>
 
         <div className="button-row">

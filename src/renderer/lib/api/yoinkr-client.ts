@@ -20,6 +20,8 @@ const appClient = {
     unwrapResult(await window.yoinkrApi.app.getBootstrapState()),
   revealPath: async (targetPath: string): Promise<boolean> =>
     unwrapResult(await window.yoinkrApi.app.revealPath(targetPath)),
+  openDownloadLogsDirectory: async (): Promise<boolean> =>
+    unwrapResult(await window.yoinkrApi.app.openDownloadLogsDirectory()),
   resolveFilePath: (file: File): string | null => window.yoinkrApi.app.resolveFilePath(file),
 };
 

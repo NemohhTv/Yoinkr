@@ -18,6 +18,7 @@ export interface YoinkrApi {
   app: {
     getBootstrapState(): Promise<Result<BootstrapState>>;
     revealPath(targetPath: string): Promise<Result<boolean>>;
+    openDownloadLogsDirectory(): Promise<Result<boolean>>;
     resolveFilePath(file: File): string | null;
   };
   settings: {

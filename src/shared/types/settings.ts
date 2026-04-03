@@ -36,6 +36,8 @@ export interface AppSettings {
   backupBeforeReplace: boolean;
   theme: 'dark';
   legalNoticeAccepted: boolean;
+  /** When true, each download writes yt-dlp stderr to %AppData%/Yoinkr/logs/downloads/ for debugging. */
+  saveDownloadLogs: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -61,6 +63,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   backupBeforeReplace: true,
   theme: 'dark',
   legalNoticeAccepted: false,
+  saveDownloadLogs: true,
 };
 
 export type SettingsPatch = Partial<AppSettings>;
