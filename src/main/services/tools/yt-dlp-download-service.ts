@@ -1482,8 +1482,6 @@ export class YtDlpDownloadService {
       '--retries',
       '5',
       '--no-part',
-      '--force-keyframes-at-cuts',
-      '--no-post-overwrites',
     ];
     if (process.platform === 'win32') {
       commonArgs.push('--windows-filenames');
