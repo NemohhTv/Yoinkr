@@ -116,9 +116,14 @@ const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
  * Parallel DASH/HLS fragments for section clips. Higher = faster until YouTube or disk limits.
  * `Merger+ffmpeg:-nostdin` + `ffmpeg:-nostdin` reduce Windows merge deadlocks; lower if merge stalls.
  */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 24;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 32;
 /** Larger HTTP reads can reduce per-request overhead / mild throttling on fragment URLs. */
 const SECTION_HTTP_CHUNK_SIZE = '16M';
+/**
+ * DASH section cuts can produce bursty A/V packets; a larger mux queue avoids ffmpeg sitting
+ * “idle” while waiting to schedule streams (feels hung though CPU is low).
+ */
+const SECTION_FFMPEG_MUX_QUEUE = '8192';
 
 /** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
 function stripElapsedSuffixFromProgressMessage(msg: string): string {
@@ -640,7 +645,8 @@ export class YtDlpDownloadService {
               percent: 99,
               speed: '',
               eta: '',
-              message: 'Finalizing clip… (quiet phase — may take a while on large sources)',
+              message:
+                'Finalizing clip… ffmpeg often prints nothing for minutes during MP4 merge/AAC — still working unless CPU & disk stay at 0.',
             });
             return;
           }
@@ -907,8 +913,8 @@ export class YtDlpDownloadService {
       /**
        * Windows: ffmpeg can wait on stdin when spawned under yt-dlp; Merger may need its own ppa.
        */
-      args.push('--ppa', 'ffmpeg:-nostdin');
-      args.push('--ppa', 'Merger+ffmpeg:-nostdin');
+      args.push('--ppa', `ffmpeg:-nostdin -max_muxing_queue_size ${SECTION_FFMPEG_MUX_QUEUE}`);
+      args.push('--ppa', `Merger+ffmpeg:-nostdin -max_muxing_queue_size ${SECTION_FFMPEG_MUX_QUEUE}`);
     }
 
     args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
@@ -928,13 +934,18 @@ export class YtDlpDownloadService {
          *
          * Do **not** force AAC in `Merger+ffmpeg`: intermediate is often **WebM**. Only **VideoRemuxer**.
          */
+        const muxQ = this.requiresPartialSectionDownload(request)
+          ? ` -max_muxing_queue_size ${SECTION_FFMPEG_MUX_QUEUE}`
+          : '';
         if (mp4AacRemuxMode === 'copy') {
-          args.push('--ppa', 'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a copy');
+          args.push('--ppa', `VideoRemuxer+ffmpeg:-nostdin${muxQ} -c:v copy -c:a copy`);
         } else {
+          /** Section + encode: slightly lower bitrate saves a bit of CPU with minimal quality loss. */
+          const aacBr = this.requiresPartialSectionDownload(request) ? '160k' : '192k';
           /** `-threads 0` = ffmpeg picks core count — much faster AAC encode than forcing 1 thread. */
           args.push(
             '--ppa',
-            'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
+            `VideoRemuxer+ffmpeg:-nostdin${muxQ} -c:v copy -c:a aac -b:a ${aacBr} -aac_coder fast -threads 0`,
           );
         }
       }
