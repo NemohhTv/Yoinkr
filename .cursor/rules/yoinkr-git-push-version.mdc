@@ -1,0 +1,18 @@
+---
+description: Bump app version when pushing Yoinkr to git (releases)
+alwaysApply: true
+---
+
+# Git push = version bump
+
+When the user asks to **push to git**, **commit and push**, or similar (intent: publish changes to GitHub), **also ship an app version bump** unless they explicitly say **no version bump** or **skip version**.
+
+1. After commits are ready, bump **`package.json`** / **`package-lock.json`**:
+   - If they give an exact version (e.g. `0.2.23`), run: `npm version <that-version> -m "chore: release v%s"`
+   - Otherwise run: `npm version patch -m "chore: release v%s"` (next patch).
+2. Push **`main`** (or current branch) **and** the new **`v*` tag**:  
+   `git push origin main` then `git push origin vX.Y.Z`.
+
+Do **not** only push commits when they asked for a release-style push; the version commit + tag are part of the request.
+
+If they only want commits with **no** release (e.g. WIP), they should say **no version** or **push without version**.
