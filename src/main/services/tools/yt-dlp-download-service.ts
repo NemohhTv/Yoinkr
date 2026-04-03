@@ -113,10 +113,11 @@ const MIN_YT_DLP_SECTION_VERSION = { year: 2024, month: 7, day: 1 } as const;
 /** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
 const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
 /**
- * Section clips: **sequential** fragment fetches avoid yt-dlp/Windows races where Merger/ffmpeg starts
- * while fragment files are still open or incomplete (symptom: ffmpeg 0% CPU forever, ~idle disk).
+ * Parallel DASH/HLS fragments for section clips (major speed vs `--concurrent-fragments 1`).
+ * `Merger+ffmpeg:-nostdin` + `ffmpeg:-nostdin` reduce Windows merge deadlocks; if a machine still
+ * stalls at 0% CPU during merge, try lowering this (e.g. 4) in a future setting.
  */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 1;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 16;
 
 /** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
 function stripElapsedSuffixFromProgressMessage(msg: string): string {
@@ -926,11 +927,10 @@ export class YtDlpDownloadService {
         if (mp4AacRemuxMode === 'copy') {
           args.push('--ppa', 'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a copy');
         } else {
-          /** Section + `-threads 0` has been linked to idle ffmpeg on some Windows builds; use 1 for clips. */
-          const encThreads = this.requiresPartialSectionDownload(request) ? '1' : '0';
+          /** `-threads 0` = ffmpeg picks core count — much faster AAC encode than forcing 1 thread. */
           args.push(
             '--ppa',
-            `VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads ${encThreads}`,
+            'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
           );
         }
       }
