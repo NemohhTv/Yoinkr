@@ -129,6 +129,24 @@ const SECTION_HTTP_CHUNK_SIZE = '16M';
  */
 const SECTION_FFMPEG_MUX_QUEUE = '8192';
 
+/** Applied immediately before each `-i` for direct HTTP stream-seek (section clips). */
+const SECTION_DIRECT_HTTP_INPUT_OPTS = [
+  '-reconnect',
+  '1',
+  '-reconnect_streamed',
+  '1',
+  '-reconnect_delay_max',
+  '5',
+  '-multiple_requests',
+  '1',
+  '-tcp_nodelay',
+  '1',
+  '-analyzeduration',
+  '2000000',
+  '-probesize',
+  '5000000',
+] as const;
+
 function clampSectionConcurrentFragments(n: number): number {
   return Math.min(32, Math.max(1, Math.floor(Number.isFinite(n) ? n : 8)));
 }
@@ -261,6 +279,8 @@ function clipQuietPhaseHint(request: ItemDownloadRequest): string {
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
+  /** Two ffmpeg children for parallel video+audio section direct downloads (cancel kills both). */
+  private readonly activeParallelSectionFfmpeg = new Map<string, ChildProcess[]>();
   /** User pressed Stop — used because Windows often reports `signal: null` on killed children. */
   private readonly userCancelledDownloadIds = new Set<string>();
 
@@ -270,8 +290,35 @@ export class YtDlpDownloadService {
   ) {}
 
   cancelItem(id: string): boolean {
+    const parallel = this.activeParallelSectionFfmpeg.get(id);
+    if (parallel && parallel.length > 0) {
+      let killed = false;
+      for (const child of parallel) {
+        if (child.killed) {
+          continue;
+        }
+        killed = true;
+        const pid = child.pid;
+        if (pid != null) {
+          treeKill(pid, 'SIGKILL', () => {});
+        } else {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      this.activeParallelSectionFfmpeg.delete(id);
+      if (killed) {
+        this.userCancelledDownloadIds.add(id);
+        return true;
+      }
+    }
     const child = this.activeProcesses.get(id);
-    if (!child || child.killed) return false;
+    if (!child || child.killed) {
+      return false;
+    }
     this.userCancelledDownloadIds.add(id);
     const pid = child.pid;
     if (pid != null) {
@@ -1231,6 +1278,386 @@ export class YtDlpDownloadService {
     ffmpegArgs.push('-c:a', 'copy');
   }
 
+  /** Options placed before `-ss`/`-to`/`-i` for each HTTP input (direct section clips). */
+  private buildSectionDirectInputOptions(headers: Record<string, string> | undefined): string[] {
+    return [...ffmpegHeadersArg(headers), ...SECTION_DIRECT_HTTP_INPUT_OPTS];
+  }
+
+  /**
+   * Spawn one ffmpeg for direct section pipeline. Parallel legs share `parallelBucket` for cancel.
+   * `reportVideoTimeProgress`: parse stderr `time=` as clip percent (video leg only when downloading in parallel).
+   */
+  private runSectionDirectFfmpegJob(
+    ffmpegPath: string,
+    args: string[],
+    options: {
+      request: ItemDownloadRequest;
+      clipDuration: number;
+      onProgress: ProgressCallback;
+      logStream: WriteStream | null;
+      reportVideoTimeProgress: boolean;
+      parallelBucket: ChildProcess[] | null;
+      logLabel: string;
+    },
+  ): Promise<{ success: boolean; cancelled: boolean }> {
+    const { request, clipDuration, onProgress, logStream, parallelBucket } = options;
+    return new Promise((resolve) => {
+      logStream?.write(`# ${options.logLabel} args=${JSON.stringify(args)}\n`);
+      const child = spawn(ffmpegPath, args, {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+        env: { ...process.env },
+      });
+      if (parallelBucket) {
+        parallelBucket.push(child);
+      } else {
+        this.activeProcesses.set(request.id, child);
+      }
+
+      let buf = '';
+      let lastEmit = 0;
+      let settled = false;
+
+      const finish = (success: boolean, cancelled: boolean): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (!parallelBucket) {
+          this.activeProcesses.delete(request.id);
+        }
+        resolve({ success, cancelled });
+      };
+
+      const feedErr = (chunk: Buffer): void => {
+        const text = chunk.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        buf += text;
+        logStream?.write(text);
+        let idx: number;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          if (!options.reportVideoTimeProgress) {
+            continue;
+          }
+          const clean = stripAnsi(line);
+          const tm = clean.match(FFMPEG_TIME_RE);
+          if (tm) {
+            const now = Date.now();
+            if (now - lastEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
+              lastEmit = now;
+              const tsec = parseFfmpegTimeToSeconds(tm[1]!);
+              const pct = Math.min(98, Math.round((tsec / clipDuration) * 100));
+              onProgress({
+                id: request.id,
+                phase: 'downloading',
+                percent: Math.max(1, pct),
+                speed: '',
+                eta: '',
+                message: `Clip: ${pct}%`,
+              });
+            }
+          }
+        }
+      };
+
+      child.stderr?.on('data', feedErr);
+
+      child.on('error', () => {
+        finish(false, false);
+      });
+
+      child.on('close', (code) => {
+        if (buf.length > 0 && options.reportVideoTimeProgress) {
+          for (const line of buf.split('\n')) {
+            const clean = stripAnsi(line);
+            const tm = clean.match(FFMPEG_TIME_RE);
+            if (tm) {
+              const tsec = parseFfmpegTimeToSeconds(tm[1]!);
+              const pct = Math.min(98, Math.round((tsec / clipDuration) * 100));
+              onProgress({
+                id: request.id,
+                phase: 'downloading',
+                percent: Math.max(1, pct),
+                speed: '',
+                eta: '',
+                message: `Clip: ${pct}%`,
+              });
+            }
+          }
+          buf = '';
+        }
+        const cancelled = this.userCancelledDownloadIds.has(request.id);
+        finish(code === 0 && !cancelled, cancelled);
+      });
+    });
+  }
+
+  /**
+   * DASH video+audio: download both streams in parallel, then local `-c copy` mux (fast).
+   * Not used for WebM output (single ffmpeg is simpler for VP9/Opus in one graph).
+   */
+  private async downloadSectionDirectParallelDash(
+    request: ItemDownloadRequest,
+    onProgress: ProgressCallback,
+    downloadDir: string,
+    ffmpegPath: string,
+    videoStream: SectionDirectResolvedStream,
+    audioStream: SectionDirectResolvedStream,
+    start: number,
+    end: number,
+    clipDuration: number,
+    encodeParallelAudioToAac: boolean,
+    outPath: string,
+    logStream: WriteStream | null,
+    logLine: (s: string) => void,
+  ): Promise<ItemDownloadResult | null> {
+    const tempDir = join(downloadDir, `.tmp-${request.id}`);
+    try {
+      mkdirSync(tempDir, { recursive: true });
+    } catch {
+      return null;
+    }
+
+    const audioTempExt = encodeParallelAudioToAac
+      ? 'm4a'
+      : audioStream.acodec.toLowerCase().includes('opus')
+        ? 'webm'
+        : 'm4a';
+    const tempVideo = join(tempDir, 'section-direct-v.mp4');
+    const tempAudio = join(tempDir, `section-direct-a.${audioTempExt}`);
+
+    for (const p of [tempVideo, tempAudio, outPath]) {
+      if (existsSync(p)) {
+        try {
+          unlinkSync(p);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    const muxQ = ['-max_muxing_queue_size', SECTION_FFMPEG_MUX_QUEUE];
+    const audioCodecArgs: string[] = encodeParallelAudioToAac
+      ? ['-c:a', 'aac', '-b:a', '192k', '-aac_coder', 'fast', '-threads', '0']
+      : ['-c:a', 'copy'];
+
+    const videoArgs: string[] = [
+      '-nostdin',
+      '-hide_banner',
+      '-y',
+      '-loglevel',
+      'info',
+      ...muxQ,
+      ...this.buildSectionDirectInputOptions(videoStream.headers),
+      '-ss',
+      String(start),
+      '-to',
+      String(end),
+      '-i',
+      videoStream.url,
+      '-c:v',
+      'copy',
+      '-an',
+      '-avoid_negative_ts',
+      'make_zero',
+      tempVideo,
+    ];
+
+    const audioArgs: string[] = [
+      '-nostdin',
+      '-hide_banner',
+      '-y',
+      '-loglevel',
+      'info',
+      ...muxQ,
+      ...this.buildSectionDirectInputOptions(audioStream.headers),
+      '-ss',
+      String(start),
+      '-to',
+      String(end),
+      '-i',
+      audioStream.url,
+      ...audioCodecArgs,
+      '-vn',
+      '-avoid_negative_ts',
+      'make_zero',
+      tempAudio,
+    ];
+
+    onProgress({
+      id: request.id,
+      phase: 'downloading',
+      percent: 0,
+      speed: '',
+      eta: '',
+      message: 'Downloading clip streams…',
+    });
+
+    const parallelBucket: ChildProcess[] = [];
+    this.activeParallelSectionFfmpeg.set(request.id, parallelBucket);
+
+    const directTimeoutMs = 45 * 60 * 1000;
+    const timeoutKill = setTimeout(() => {
+      logLine(`# parallel direct ffmpeg timeout after ${directTimeoutMs}ms`);
+      for (const c of parallelBucket) {
+        if (c.killed) {
+          continue;
+        }
+        const pid = c.pid;
+        if (pid != null) {
+          treeKill(pid, 'SIGKILL', () => {});
+        } else {
+          try {
+            c.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }, directTimeoutMs);
+
+    let vResult: { success: boolean; cancelled: boolean } | undefined;
+    let aResult: { success: boolean; cancelled: boolean } | undefined;
+    try {
+      [vResult, aResult] = await Promise.all([
+        this.runSectionDirectFfmpegJob(ffmpegPath, videoArgs, {
+          request,
+          clipDuration,
+          onProgress,
+          logStream,
+          reportVideoTimeProgress: true,
+          parallelBucket,
+          logLabel: 'parallel_video',
+        }),
+        this.runSectionDirectFfmpegJob(ffmpegPath, audioArgs, {
+          request,
+          clipDuration,
+          onProgress,
+          logStream,
+          reportVideoTimeProgress: false,
+          parallelBucket,
+          logLabel: 'parallel_audio',
+        }),
+      ]);
+    } finally {
+      clearTimeout(timeoutKill);
+      this.activeParallelSectionFfmpeg.delete(request.id);
+      if (vResult?.cancelled || aResult?.cancelled) {
+        this.userCancelledDownloadIds.delete(request.id);
+      }
+    }
+
+    if (vResult == null || aResult == null) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      return null;
+    }
+
+    const anyCancelled = vResult.cancelled || aResult.cancelled;
+    if (anyCancelled) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      if (existsSync(outPath)) {
+        try {
+          unlinkSync(outPath);
+        } catch {
+          /* ignore */
+        }
+      }
+      const msg = 'Download cancelled.';
+      onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
+      return { id: request.id, success: false, outputPath: null, error: msg };
+    }
+
+    if (!vResult.success || !aResult.success) {
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+      logLine(`# parallel leg failed v=${vResult.success} a=${aResult.success}`);
+      return null;
+    }
+
+    onProgress({
+      id: request.id,
+      phase: 'merging',
+      percent: 99,
+      speed: '',
+      eta: '',
+      message: 'Combining streams…',
+    });
+
+    const muxArgs: string[] = [
+      '-nostdin',
+      '-hide_banner',
+      '-y',
+      '-i',
+      tempVideo,
+      '-i',
+      tempAudio,
+      '-c',
+      'copy',
+      '-avoid_negative_ts',
+      'make_zero',
+    ];
+    if (request.outputFormat === 'mp4' || request.outputFormat === 'original') {
+      muxArgs.push('-movflags', '+faststart');
+    }
+    muxArgs.push(outPath);
+
+    logLine(`# phase=${new Date().toISOString()} parallel_mux`);
+    logLine(`# mux_args=${JSON.stringify(muxArgs)}`);
+
+    const muxResult = spawnSync(ffmpegPath, muxArgs, {
+      windowsHide: true,
+      encoding: 'utf8',
+      timeout: 60_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+
+    if (muxResult.status !== 0) {
+      logLine(`# mux failed status=${muxResult.status} err=${muxResult.stderr?.slice(-600) ?? ''}`);
+      if (existsSync(outPath)) {
+        try {
+          unlinkSync(outPath);
+        } catch {
+          /* ignore */
+        }
+      }
+      return null;
+    }
+
+    if (!existsSync(outPath)) {
+      return null;
+    }
+
+    const renamed = this.renameToFriendlyTitle(outPath, request);
+    onProgress({
+      id: request.id,
+      phase: 'complete',
+      percent: 100,
+      speed: '',
+      eta: '',
+      message: 'Download complete!',
+    });
+    logLine(`# phase=${new Date().toISOString()} done success=true`);
+    return { id: request.id, success: true, outputPath: renamed };
+  }
+
   /**
    * Fast section download: resolve stream URLs with yt-dlp `-j`, then ffmpeg `-ss`/`-to` before `-i`.
    * Returns `null` so the caller falls back to `--download-sections` when this path cannot run or ffmpeg fails.
@@ -1407,11 +1834,51 @@ export class YtDlpDownloadService {
       request.audioPreference === 'aac' &&
       opusAudio;
 
+    /** Parallel DASH legs: also treat `original` (mp4 file) like mp4 for Opus→AAC when user wants AAC. */
+    const encodeParallelAudioToAac =
+      !wantAudioOnly &&
+      !wantVideoOnly &&
+      (request.outputFormat === 'mp4' || request.outputFormat === 'original') &&
+      request.audioPreference === 'aac' &&
+      opusAudio;
+
+    const useParallelDash =
+      videoStream != null &&
+      audioStream != null &&
+      !wantAudioOnly &&
+      !wantVideoOnly &&
+      request.outputFormat !== 'webm' &&
+      (request.outputFormat === 'mp4' ||
+        request.outputFormat === 'original' ||
+        request.outputFormat === 'mkv');
+
+    if (useParallelDash) {
+      logLine('# strategy=parallel_dash');
+      const pr = await this.downloadSectionDirectParallelDash(
+        request,
+        onProgress,
+        downloadDir,
+        ffmpegPath,
+        videoStream,
+        audioStream,
+        start,
+        end,
+        clipDuration,
+        encodeParallelAudioToAac,
+        outPath,
+        logStream,
+        logLine,
+      );
+      logStream?.end();
+      return pr;
+    }
+
     const muxQ = ['-max_muxing_queue_size', SECTION_FFMPEG_MUX_QUEUE];
     const ffmpegArgs: string[] = ['-nostdin', '-hide_banner', '-y', ...muxQ];
 
     const pushInput = (headers: Record<string, string> | undefined, url: string): void => {
-      ffmpegArgs.push(...ffmpegHeadersArg(headers), '-ss', String(start), '-to', String(end), '-i', url);
+      ffmpegArgs.push(...this.buildSectionDirectInputOptions(headers));
+      ffmpegArgs.push('-ss', String(start), '-to', String(end), '-i', url);
     };
 
     if (singleCombined) {
