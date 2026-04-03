@@ -116,7 +116,8 @@ const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
  * Parallel fragment downloads for DASH/HLS (YouTube, etc.). Section clips still pull many fragments;
  * concurrency reduces wall-clock time vs strictly sequential fetches.
  */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 16;
+/** Lower than full-video DASH: fewer edge-case stalls on Windows during section merge/remux. */
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 8;
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
@@ -258,9 +259,16 @@ export class YtDlpDownloadService {
       let clipHeartbeat: ReturnType<typeof setInterval> | null = null;
       let lastSubstantiveStderrAt = Date.now();
       let clipFinalizingHintEmitted = false;
+      /** Clip heartbeat used to force `downloading` at 99% and overwrote merge/ffmpeg UI — keep post-process phases stable. */
+      let heavyPostprocessSince: number | null = null;
+      let lastPostUi: { phase: 'merging' | 'converting'; message: string } | null = null;
 
       const emit = (p: ItemDownloadProgress): void => {
         lastProgressEmitAt = Date.now();
+        if (p.phase === 'merging' || p.phase === 'converting') {
+          heavyPostprocessSince ??= Date.now();
+          lastPostUi = { phase: p.phase, message: p.message };
+        }
         let out = p;
         if (p.phase === 'downloading') {
           const pct = Math.max(p.percent, lastShownPercent);
@@ -576,6 +584,20 @@ export class YtDlpDownloadService {
             return;
           }
 
+          if (inHeavyPostprocess) {
+            const ui = lastPostUi ?? { phase: 'merging' as const, message: mergingMessage };
+            const sec = Math.floor((Date.now() - (heavyPostprocessSince ?? Date.now())) / 1000);
+            emit({
+              id: request.id,
+              phase: ui.phase,
+              percent: 99,
+              speed: '',
+              eta: '',
+              message: sec > 0 ? `${ui.message} (${sec}s)` : ui.message,
+            });
+            return;
+          }
+
           const written = sumStreamingBytesForDownload(tempDir, downloadDir, request.id);
           if (written > lastPartBytes && written > 0) {
             lastPartBytes = written;
@@ -592,7 +614,6 @@ export class YtDlpDownloadService {
           }
 
           if (
-            isClipDownload &&
             !clipFinalizingHintEmitted &&
             lastShownPercent >= 96 &&
             Date.now() - lastSubstantiveStderrAt > 20000
@@ -689,6 +710,13 @@ export class YtDlpDownloadService {
           if (finalPath && existsSync(finalPath)) {
             finalPath = this.renameToFriendlyTitle(finalPath, request);
           }
+          if (!finalPath || !existsSync(finalPath)) {
+            const msg =
+              'Download reported success but no output file was found. Check Settings → download logs, or try a lower quality / Opus audio.';
+            onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
+            resolve({ id: request.id, success: false, outputPath: null, error: msg });
+            return;
+          }
           onProgress({
             id: request.id,
             phase: 'complete',
@@ -709,12 +737,11 @@ export class YtDlpDownloadService {
     });
 
     /**
-     * For full downloads, copy-first can be a big win when DASH audio is m4a/AAC.
-     * For section downloads, copy-first can backfire: if selected audio is still Opus,
-     * yt-dlp may fail at remux end and we re-run the whole section in encode mode.
-     * Use single-pass encode for sections to avoid that "takes forever" second attempt.
+     * Copy-first when DASH serves m4a audio avoids slow Opus→AAC transcode in VideoRemuxer.
+     * For section clips, if audio is still Opus, postprocess fails and we retry once with encode
+     * (`shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure`) — same as full-video downloads.
      */
-    const tryM4aCopyRemux = this.prefersM4aDashAudio(request) && !this.requiresPartialSectionDownload(request);
+    const tryM4aCopyRemux = this.prefersM4aDashAudio(request);
 
     const runWithRemuxMode = (selection: string[] | undefined, mode: 'copy' | 'encode'): string[] =>
       this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, selection, mode);
