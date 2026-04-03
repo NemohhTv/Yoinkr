@@ -151,24 +151,7 @@ export class YtDlpDownloadService {
     this.userCancelledDownloadIds.add(id);
     let killed = false;
 
-    const main = this.activeProcesses.get(id);
-    if (main && !main.killed) {
-      killed = true;
-      const pid = main.pid;
-      if (pid != null) {
-        treeKill(pid, 'SIGKILL', () => {});
-      } else {
-        try {
-          main.kill('SIGKILL');
-        } catch {
-          /* ignore */
-        }
-      }
-      this.activeProcesses.delete(id);
-    }
-
-    for (const suffix of ['video', 'audio'] as const) {
-      const key = `${id}__${suffix}`;
+    for (const key of [id, `${id}__video`, `${id}__audio`]) {
       const child = this.activeProcesses.get(key);
       if (child && !child.killed) {
         killed = true;
@@ -1015,14 +998,90 @@ export class YtDlpDownloadService {
     return search(dir);
   }
 
+  /**
+   * After `-f "bestvideo…,bestaudio"` (comma = separate files), locate video vs audio outputs under `rootDir`.
+   */
+  private findSplitOutputs(rootDir: string): { videoFile: string | null; audioFile: string | null } {
+    const files: { path: string; size: number; ext: string }[] = [];
+
+    const scan = (dir: string): void => {
+      try {
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name);
+          try {
+            const st = statSync(full);
+            if (st.isFile() && !name.endsWith('.part') && !name.endsWith('.ytdl')) {
+              files.push({ path: full, size: st.size, ext: extname(name).toLowerCase() });
+            } else if (st.isDirectory()) {
+              scan(full);
+            }
+          } catch {
+            /* skip */
+          }
+        }
+      } catch {
+        /* skip */
+      }
+    };
+    scan(rootDir);
+
+    if (files.length === 0) {
+      return { videoFile: null, audioFile: null };
+    }
+    if (files.length === 1) {
+      return { videoFile: files[0]!.path, audioFile: null };
+    }
+
+    files.sort((a, b) => b.size - a.size);
+    const videoFile = files[0]!.path;
+
+    const audioExts = new Set(['.m4a', '.opus', '.ogg', '.mp3', '.aac', '.wav', '.flac']);
+    const largestSize = files[0]!.size;
+    let audioFile: string | null = null;
+
+    for (let i = files.length - 1; i >= 1; i--) {
+      const f = files[i]!;
+      if (f.size === 0) {
+        continue;
+      }
+      if (audioExts.has(f.ext) || f.size <= largestSize * 0.2) {
+        audioFile = f.path;
+        break;
+      }
+    }
+
+    if (audioFile == null) {
+      for (let i = files.length - 1; i >= 1; i--) {
+        if (files[i]!.size > 0) {
+          audioFile = files[i]!.path;
+          break;
+        }
+      }
+    }
+
+    if (audioFile === videoFile) {
+      audioFile = files.length > 1 && files[1]!.size > 0 ? files[1]!.path : null;
+    }
+
+    return { videoFile, audioFile };
+  }
+
   private runSplitStream(
     ytDlpPath: string,
     args: string[],
     requestId: string,
     streamType: 'video' | 'audio',
     onProgress: ProgressCallback,
+    clipLogLine?: (line: string) => void,
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve) => {
+      console.log(`[Yoinkr] ${streamType} stream:`, ytDlpPath, args.join(' '));
+      try {
+        clipLogLine?.(`# stream=${streamType} argv=${JSON.stringify([ytDlpPath, ...args])}`);
+      } catch {
+        /* ignore */
+      }
+
       const child = spawn(ytDlpPath, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -1038,8 +1097,8 @@ export class YtDlpDownloadService {
       const processKey = `${requestId}__${streamType}`;
       this.activeProcesses.set(processKey, child);
 
-      /** Full log for errors; mirrors main download path (stdout + stderr, line-buffered). */
-      let processLog = '';
+      let stderrAcc = '';
+      let stdoutAcc = '';
       const outBuf = { s: '' };
       const errBuf = { s: '' };
       /** Fragment / unknown-total progress often has no `%` — advance from bytes + frag ratio. */
@@ -1168,19 +1227,26 @@ export class YtDlpDownloadService {
         }
       };
 
-      const feedStream = (acc: { s: string }, chunk: Buffer): void => {
-        acc.s += chunk.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const feedStream = (acc: { s: string }, text: string): void => {
+        acc.s += text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
         let idx: number;
         while ((idx = acc.s.indexOf('\n')) >= 0) {
           const line = acc.s.slice(0, idx);
           acc.s = acc.s.slice(idx + 1);
-          processLog += `${line}\n`;
           parseClipProgressLine(line);
         }
       };
 
-      child.stdout.on('data', (c: Buffer) => feedStream(outBuf, c));
-      child.stderr.on('data', (c: Buffer) => feedStream(errBuf, c));
+      child.stdout.on('data', (c: Buffer) => {
+        const text = c.toString('utf8');
+        stdoutAcc += text;
+        feedStream(outBuf, text);
+      });
+      child.stderr.on('data', (c: Buffer) => {
+        const text = c.toString('utf8');
+        stderrAcc += text;
+        feedStream(errBuf, text);
+      });
 
       const timeout = setTimeout(() => {
         if (!child.killed) {
@@ -1201,6 +1267,16 @@ export class YtDlpDownloadService {
       child.on('error', (err) => {
         clearTimeout(timeout);
         this.activeProcesses.delete(processKey);
+        console.error(`[Yoinkr] ${streamType} stream spawn error:`, err.message);
+        clipLogLine?.(`# spawn_error stream=${streamType} ${err.message}`);
+        onProgress({
+          id: requestId,
+          phase: 'downloading',
+          percent: 0,
+          speed: '',
+          eta: '',
+          message: `${streamType} failed: ${err.message}`,
+        });
         resolve({ success: false, error: err.message });
       });
 
@@ -1208,24 +1284,52 @@ export class YtDlpDownloadService {
         clearTimeout(timeout);
         this.activeProcesses.delete(processKey);
 
-        if (outBuf.s.trim()) {
-          processLog += `${outBuf.s}\n`;
-          parseClipProgressLine(outBuf.s);
-        }
-        if (errBuf.s.trim()) {
-          processLog += `${errBuf.s}\n`;
-          parseClipProgressLine(errBuf.s);
+        const flushRemainder = (acc: { s: string }): void => {
+          if (acc.s.trim()) {
+            parseClipProgressLine(acc.s);
+            acc.s = '';
+          }
+        };
+        flushRemainder(outBuf);
+        flushRemainder(errBuf);
+
+        const combinedLog = `${stderrAcc}\n${stdoutAcc}`;
+        const cancelled = this.userCancelledDownloadIds.has(requestId);
+
+        if (exitCode !== 0) {
+          console.error(
+            `[Yoinkr] ${streamType} stream FAILED (exit ${exitCode ?? 'null'}). stderr+stdout tail:\n${combinedLog.slice(-12_000)}`,
+          );
+          try {
+            clipLogLine?.(`# close stream=${streamType} exit=${exitCode ?? 'null'}`);
+            clipLogLine?.(combinedLog.slice(-8000));
+          } catch {
+            /* ignore */
+          }
+        } else {
+          console.log(`[Yoinkr] ${streamType} stream completed successfully`);
         }
 
-        if (this.userCancelledDownloadIds.has(requestId)) {
+        if (cancelled) {
           resolve({ success: false, error: 'Cancelled' });
           return;
         }
 
-        resolve({
-          success: exitCode === 0,
-          error: exitCode !== 0 ? this.extractErrorMessage(processLog) : undefined,
-        });
+        if (exitCode !== 0) {
+          const errorMsg = this.extractErrorMessage(combinedLog);
+          onProgress({
+            id: requestId,
+            phase: 'downloading',
+            percent: 0,
+            speed: '',
+            eta: '',
+            message: `${streamType} failed: ${errorMsg}`,
+          });
+          resolve({ success: false, error: errorMsg });
+          return;
+        }
+
+        resolve({ success: true });
       });
     });
   }
@@ -1379,6 +1483,7 @@ export class YtDlpDownloadService {
       '5',
       '--no-part',
       '--force-keyframes-at-cuts',
+      '--no-post-overwrites',
     ];
     if (process.platform === 'win32') {
       commonArgs.push('--windows-filenames');
@@ -1410,9 +1515,9 @@ export class YtDlpDownloadService {
     }
 
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
-    const audioTempDir = join(tempDir, 'audio-fragments');
+    const fragmentTempDir = join(tempDir, 'fragments');
     mkdirSync(tempDir, { recursive: true });
-    mkdirSync(audioTempDir, { recursive: true });
+    mkdirSync(fragmentTempDir, { recursive: true });
 
     const dur = request.durationSeconds!;
     const sectionSpec = this.buildDownloadSectionSpec(
@@ -1421,28 +1526,52 @@ export class YtDlpDownloadService {
       dur,
     );
 
-    const videoOutput = join(tempDir, `${request.id}__video.%(ext)s`);
-    const audioOutput = join(tempDir, `${request.id}__audio.%(ext)s`);
-
-    const commonArgs = this.buildSectionClipCommonArgs(settings, ffmpeg.resolvedPath, sectionSpec);
-
+    /** Comma = separate files, no in-process merge (we remux locally). */
     const heightFilter = this.getHeightFilter(request.qualityTarget);
-    const videoFormatSelector = heightFilter
+    const videoSelector = heightFilter
       ? `bestvideo[height<=${heightFilter}]/bestvideo`
       : 'bestvideo';
+    const formatArg = `${videoSelector},bestaudio`;
 
-    const videoArgs = [...commonArgs, '-f', videoFormatSelector, '-P', `temp:${tempDir}`, '-o', videoOutput, request.url];
+    const outputTemplate = join(tempDir, '%(format_id)s.%(ext)s');
 
-    const audioArgs = [
-      ...commonArgs,
-      '-f',
-      'bestaudio',
+    const args: string[] = [
+      ...this.buildSectionClipCommonArgs(settings, ffmpeg.resolvedPath, sectionSpec),
       '-P',
-      `temp:${audioTempDir}`,
+      `temp:${fragmentTempDir}`,
       '-o',
-      audioOutput,
+      outputTemplate,
+      '-f',
+      formatArg,
       request.url,
     ];
+
+    console.log('[Yoinkr] SECTION CLIP (single yt-dlp):', JSON.stringify(args, null, 2));
+
+    const logsDownloadsDir = join(this.pathsService.getPaths().managedDirectories.logs, 'downloads');
+    let clipLogStream: WriteStream | null = null;
+    const clipLogLine = (s: string): void => {
+      try {
+        clipLogStream?.write(`${s}\n`);
+      } catch {
+        /* ignore */
+      }
+    };
+    if (settings.saveDownloadLogs) {
+      try {
+        mkdirSync(logsDownloadsDir, { recursive: true });
+        const safeTime = new Date().toISOString().replace(/[:.]/g, '-');
+        clipLogStream = createWriteStream(
+          join(logsDownloadsDir, `${request.id.slice(0, 8)}-clip-${safeTime}.log`),
+          { flags: 'a' },
+        );
+        clipLogLine('# Yoinkr section clip (single process, comma formats)');
+        clipLogLine(`# id=${request.id}`);
+        clipLogLine(`# url=${request.url}`);
+      } catch {
+        clipLogStream = null;
+      }
+    }
 
     onProgress({
       id: request.id,
@@ -1450,29 +1579,39 @@ export class YtDlpDownloadService {
       percent: 0,
       speed: '',
       eta: '',
-      message: 'Downloading clip…',
+      message: 'Starting clip download…',
     });
 
-    const [videoResult, audioResult] = await Promise.all([
-      this.runSplitStream(ytDlp.resolvedPath, videoArgs, request.id, 'video', onProgress),
-      this.runSplitStream(ytDlp.resolvedPath, audioArgs, request.id, 'audio', onProgress),
-    ]);
+    let dlResult: { success: boolean; error?: string };
+    try {
+      dlResult = await this.runSplitStream(
+        ytDlp.resolvedPath,
+        args,
+        request.id,
+        'video',
+        onProgress,
+        clipLogLine,
+      );
+    } finally {
+      try {
+        clipLogStream?.end();
+      } catch {
+        /* ignore */
+      }
+    }
 
-    if (!videoResult.success || !audioResult.success) {
+    if (!dlResult.success) {
       try {
         rmSync(tempDir, { recursive: true, force: true });
       } catch {
         /* ignore */
       }
-      const errMsg = !videoResult.success
-        ? (videoResult.error || 'Video download failed')
-        : (audioResult.error || 'Audio download failed');
+      const errMsg = dlResult.error || 'Clip download failed';
       onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: errMsg });
       return { id: request.id, success: false, outputPath: null, error: errMsg };
     }
 
-    const videoFile = this.findFileByPrefix(tempDir, `${request.id}__video`);
-    const audioFile = this.findFileByPrefix(tempDir, `${request.id}__audio`);
+    const { videoFile, audioFile } = this.findSplitOutputs(tempDir);
 
     if (!videoFile || !audioFile) {
       try {
@@ -1480,7 +1619,7 @@ export class YtDlpDownloadService {
       } catch {
         /* ignore */
       }
-      const msg = 'Downloaded stream files not found in temp directory.';
+      const msg = 'Could not find separate video and audio files after download.';
       onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
       return { id: request.id, success: false, outputPath: null, error: msg };
     }
@@ -1546,7 +1685,9 @@ export class YtDlpDownloadService {
     }
 
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
+    const fragmentDir = join(tempDir, 'fragments');
     mkdirSync(tempDir, { recursive: true });
+    mkdirSync(fragmentDir, { recursive: true });
 
     const dur = request.durationSeconds!;
     const sectionSpec = this.buildDownloadSectionSpec(
@@ -1560,7 +1701,7 @@ export class YtDlpDownloadService {
     const args: string[] = [
       ...this.buildSectionClipCommonArgs(settings, ffmpeg.resolvedPath, sectionSpec),
       '-P',
-      `temp:${tempDir}`,
+      `temp:${fragmentDir}`,
       '-o',
       outputTemplate,
       '-f',
@@ -1632,7 +1773,9 @@ export class YtDlpDownloadService {
     }
 
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
+    const videoTempDir = join(tempDir, 'video-fragments');
     mkdirSync(tempDir, { recursive: true });
+    mkdirSync(videoTempDir, { recursive: true });
 
     const dur = request.durationSeconds!;
     const sectionSpec = this.buildDownloadSectionSpec(
@@ -1646,13 +1789,13 @@ export class YtDlpDownloadService {
       ? `bestvideo[height<=${heightFilter}]/bestvideo`
       : 'bestvideo';
 
-    const videoOutput = join(tempDir, `${request.id}__video.%(ext)s`);
+    const videoOutput = join(videoTempDir, 'video.%(ext)s');
     const videoArgs = [
       ...this.buildSectionClipCommonArgs(settings, ffmpeg.resolvedPath, sectionSpec),
       '-f',
       videoFormatSelector,
       '-P',
-      `temp:${tempDir}`,
+      `temp:${videoTempDir}`,
       '-o',
       videoOutput,
       request.url,
@@ -1679,7 +1822,7 @@ export class YtDlpDownloadService {
       return { id: request.id, success: false, outputPath: null, error: msg };
     }
 
-    const videoFile = this.findFileByPrefix(tempDir, `${request.id}__video`);
+    const videoFile = this.findFileByPrefix(videoTempDir, 'video');
     if (!videoFile) {
       try {
         rmSync(tempDir, { recursive: true, force: true });
