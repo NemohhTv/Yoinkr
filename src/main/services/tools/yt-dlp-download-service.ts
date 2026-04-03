@@ -113,11 +113,10 @@ const MIN_YT_DLP_SECTION_VERSION = { year: 2024, month: 7, day: 1 } as const;
 /** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
 const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
 /**
- * Parallel fragment downloads for DASH/HLS (YouTube, etc.). Section clips still pull many fragments;
- * concurrency reduces wall-clock time vs strictly sequential fetches.
+ * Section clips: **sequential** fragment fetches avoid yt-dlp/Windows races where Merger/ffmpeg starts
+ * while fragment files are still open or incomplete (symptom: ffmpeg 0% CPU forever, ~idle disk).
  */
-/** Lower than full-video DASH: fewer edge-case stalls on Windows during section merge/remux. */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 4;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 1;
 
 /** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
 function stripElapsedSuffixFromProgressMessage(msg: string): string {
@@ -901,10 +900,10 @@ export class YtDlpDownloadService {
     if (this.requiresPartialSectionDownload(request)) {
       args.push('--concurrent-fragments', String(SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS));
       /**
-       * Windows: on some machines ffmpeg waits for stdin when yt-dlp spawns it, so merge/remux
-       * looks hung forever (`Merging…` with no stderr). `-nostdin` is safe everywhere we target.
+       * Windows: ffmpeg can wait on stdin when spawned under yt-dlp; Merger may need its own ppa.
        */
       args.push('--ppa', 'ffmpeg:-nostdin');
+      args.push('--ppa', 'Merger+ffmpeg:-nostdin');
     }
 
     args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
@@ -927,9 +926,11 @@ export class YtDlpDownloadService {
         if (mp4AacRemuxMode === 'copy') {
           args.push('--ppa', 'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a copy');
         } else {
+          /** Section + `-threads 0` has been linked to idle ffmpeg on some Windows builds; use 1 for clips. */
+          const encThreads = this.requiresPartialSectionDownload(request) ? '1' : '0';
           args.push(
             '--ppa',
-            'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
+            `VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads ${encThreads}`,
           );
         }
       }
