@@ -26,6 +26,7 @@ const settingsSchema = z.object({
   theme: z.literal('dark'),
   legalNoticeAccepted: z.boolean(),
   saveDownloadLogs: z.boolean(),
+  sectionConcurrentFragments: z.number().int().min(1).max(32),
 });
 
 export class SettingsValidator {

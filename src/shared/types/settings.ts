@@ -38,6 +38,11 @@ export interface AppSettings {
   legalNoticeAccepted: boolean;
   /** When true, each download writes yt-dlp stderr to %AppData%/Yoinkr/logs/downloads/ for debugging. */
   saveDownloadLogs: boolean;
+  /**
+   * Parallel DASH/HLS fragments for **section** (`--download-sections`) jobs only.
+   * Lower (e.g. 4–8) on slow disks or flaky networks; higher on fast machines (max 32).
+   */
+  sectionConcurrentFragments: number;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -64,6 +69,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
   legalNoticeAccepted: false,
   saveDownloadLogs: true,
+  sectionConcurrentFragments: 8,
 };
 
 export type SettingsPatch = Partial<AppSettings>;

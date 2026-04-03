@@ -112,6 +112,8 @@ export interface ItemDownloadResult {
   success: boolean;
   outputPath: string | null;
   error?: string;
+  /** True when merge/postprocess watchdog killed yt-dlp once; caller may retry with safer section args. */
+  mergeStallRetry?: boolean;
 }
 
 export interface DownloadHistoryRecord {

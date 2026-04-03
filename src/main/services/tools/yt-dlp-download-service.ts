@@ -112,11 +112,6 @@ const FFMPEG_PROGRESS_THROTTLE_MS = 450;
 const MIN_YT_DLP_SECTION_VERSION = { year: 2024, month: 7, day: 1 } as const;
 /** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
 const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
-/**
- * Parallel DASH/HLS fragments for section clips. Higher = faster until YouTube or disk limits.
- * `Merger+ffmpeg:-nostdin` + `ffmpeg:-nostdin` reduce Windows merge deadlocks; lower if merge stalls.
- */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 32;
 /** Larger HTTP reads can reduce per-request overhead / mild throttling on fragment URLs. */
 const SECTION_HTTP_CHUNK_SIZE = '16M';
 /**
@@ -125,9 +120,50 @@ const SECTION_HTTP_CHUNK_SIZE = '16M';
  */
 const SECTION_FFMPEG_MUX_QUEUE = '8192';
 
+function clampSectionConcurrentFragments(n: number): number {
+  return Math.min(32, Math.max(1, Math.floor(Number.isFinite(n) ? n : 8)));
+}
+
+/** First line of `tool -version` for download logs. */
+function toolVersionLine(command: string | null | undefined, versionArgs: string[]): string {
+  if (!command || !existsSync(command)) {
+    return 'unavailable';
+  }
+  try {
+    const r = spawnSync(command, versionArgs, { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    const line = `${r.stdout ?? ''}`.split(/\r?\n/).find((l) => l.trim()) ?? '';
+    return line.trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
 function stripElapsedSuffixFromProgressMessage(msg: string): string {
   return msg.replace(/(?:\s*\(\d+s\))+$/u, '').trim();
+}
+
+/** Shown when stderr goes quiet during section post-process — text matches actual container/codecs. */
+function clipQuietPhaseHint(request: ItemDownloadRequest): string {
+  const tail =
+    'ffmpeg may print nothing for minutes — still working unless CPU & disk stay at 0 for a long time.';
+  if (request.mediaType === 'audio-only' || request.audioOnly) {
+    return `Finalizing clip… audio extract/encode — ${tail}`;
+  }
+  const f = request.outputFormat;
+  if (f === 'webm') {
+    return `Finalizing clip… merge/remux to WebM (often copy) — ${tail}`;
+  }
+  if (f === 'mp4' && request.audioPreference === 'aac') {
+    return `Finalizing clip… MP4 merge or AAC transcode — ${tail}`;
+  }
+  if (f === 'mp4') {
+    return `Finalizing clip… remux to MP4 — ${tail}`;
+  }
+  if (f === 'mkv') {
+    return `Finalizing clip… merge/remux to MKV — ${tail}`;
+  }
+  return `Finalizing clip… merge/remux — ${tail}`;
 }
 
 export class YtDlpDownloadService {
@@ -212,7 +248,9 @@ export class YtDlpDownloadService {
 
     const runAttempt = (
       args: string[],
+      attemptOpts?: { allowMergeStallRecovery?: boolean },
     ): Promise<ItemDownloadResult> => new Promise<ItemDownloadResult>((resolve) => {
+      const allowMergeStallRecovery = attemptOpts?.allowMergeStallRecovery !== false;
       const logsDownloadsDir = join(this.pathsService.getPaths().managedDirectories.logs, 'downloads');
       let downloadLogStream: WriteStream | null = null;
       if (settings.saveDownloadLogs) {
@@ -222,8 +260,22 @@ export class YtDlpDownloadService {
           const logPath = join(logsDownloadsDir, `${request.id.slice(0, 8)}-${safeTime}.log`);
           downloadLogStream = createWriteStream(logPath, { flags: 'a' });
           downloadLogStream.write(
-            `# Yoinkr yt-dlp session log\n# id=${request.id}\n# url=${request.url}\n# started=${new Date().toISOString()}\n\n`,
+            [
+              '# Yoinkr yt-dlp session log',
+              `# id=${request.id}`,
+              `# url=${request.url}`,
+              `# platform=${process.platform} arch=${process.arch}`,
+              `# yt-dlp=${ytDlp.resolvedPath ?? ''}`,
+              `# ffmpeg=${ffmpeg.resolvedPath ?? ''}`,
+              `# output=${request.outputFormat} audioPref=${request.audioPreference}`,
+              `# started=${new Date().toISOString()}`,
+              '',
+              '',
+            ].join('\n'),
           );
+          downloadLogStream.write(`# yt-dlp_version=${toolVersionLine(ytDlp.resolvedPath, ['--version'])}\n`);
+          downloadLogStream.write(`# ffmpeg_version=${toolVersionLine(ffmpeg.resolvedPath, ['-version'])}\n`);
+          downloadLogStream.write(`# args_json=${JSON.stringify(args)}\n\n`);
         } catch {
           downloadLogStream = null;
         }
@@ -268,14 +320,26 @@ export class YtDlpDownloadService {
       let lastShownPercent = 0;
       let lastPartBytes = 0;
       let clipHeartbeat: ReturnType<typeof setInterval> | null = null;
+      let mergeWatchdog: ReturnType<typeof setInterval> | null = null;
       let lastSubstantiveStderrAt = Date.now();
       let clipFinalizingHintEmitted = false;
       /** Clip heartbeat used to force `downloading` at 99% and overwrote merge/ffmpeg UI — keep post-process phases stable. */
       let heavyPostprocessSince: number | null = null;
       let lastPostUi: { phase: 'merging' | 'converting'; message: string } | null = null;
+      let mergeStallWatchStart: number | null = null;
+      let lastMergeDiskBytes = 0;
+      let lastMergeDiskBytesChangedAt = Date.now();
+      let settled = false;
+      let mergeStallKillPending = false;
+      let lastDiagPhase: ItemDownloadProgress['phase'] | null = null;
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
       const emit = (p: ItemDownloadProgress): void => {
         lastProgressEmitAt = Date.now();
+        if (downloadLogStream && p.phase !== lastDiagPhase) {
+          lastDiagPhase = p.phase;
+          downloadLogStream.write(`\n# [${new Date().toISOString()}] phase: ${p.phase}\n`);
+        }
         if (p.phase === 'merging' || p.phase === 'converting') {
           heavyPostprocessSince ??= Date.now();
           lastPostUi = {
@@ -299,6 +363,23 @@ export class YtDlpDownloadService {
           clearInterval(clipHeartbeat);
           clipHeartbeat = null;
         }
+        if (mergeWatchdog != null) {
+          clearInterval(mergeWatchdog);
+          mergeWatchdog = null;
+        }
+      };
+
+      const finish = (out: ItemDownloadResult): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
+        clearClipHeartbeat();
+        this.activeProcesses.delete(request.id);
+        resolve(out);
       };
 
       const mergingMessage = isClipDownload
@@ -495,6 +576,10 @@ export class YtDlpDownloadService {
         const postTagMatch = clean.match(POSTPROCESS_TAG_RE);
         if (postTagMatch) {
           inHeavyPostprocess = true;
+          mergeStallWatchStart ??= Date.now();
+          if (downloadLogStream) {
+            downloadLogStream.write(`\n# [${new Date().toISOString()}] postprocessor: ${postTagMatch[0]}\n`);
+          }
           const tag = postTagMatch[0].toLowerCase();
           const encodingLike =
             tag.includes('extractaudio') ||
@@ -645,8 +730,7 @@ export class YtDlpDownloadService {
               percent: 99,
               speed: '',
               eta: '',
-              message:
-                'Finalizing clip… ffmpeg often prints nothing for minutes during MP4 merge/AAC — still working unless CPU & disk stay at 0.',
+              message: clipQuietPhaseHint(request),
             });
             return;
           }
@@ -661,11 +745,56 @@ export class YtDlpDownloadService {
             message: 'Downloading clip…',
           });
         }, 1500);
+
+        if (allowMergeStallRecovery) {
+          mergeWatchdog = setInterval(() => {
+            if (settled || child.killed) {
+              return;
+            }
+            const bytes = sumStreamingBytesForDownload(tempDir, downloadDir, request.id);
+            if (bytes !== lastMergeDiskBytes) {
+              lastMergeDiskBytes = bytes;
+              lastMergeDiskBytesChangedAt = Date.now();
+            }
+            const stableMs = Date.now() - lastMergeDiskBytesChangedAt;
+            const heavySince =
+              heavyPostprocessSince != null ? Date.now() - heavyPostprocessSince : 0;
+            const mergeLongIdle =
+              mergeStallWatchStart != null &&
+              Date.now() - mergeStallWatchStart >= 5 * 60 * 1000 &&
+              stableMs >= 90 * 1000 &&
+              inHeavyPostprocess;
+            const fallbackStall =
+              mergeStallWatchStart == null &&
+              inHeavyPostprocess &&
+              heavySince >= 12 * 60 * 1000 &&
+              stableMs >= 3 * 60 * 1000;
+            if (mergeLongIdle || fallbackStall) {
+              downloadLogStream?.write(
+                `\n# [${new Date().toISOString()}] MERGE_STALL_WATCHDOG mergeLongIdle=${mergeLongIdle} fallbackStall=${fallbackStall} stableMs=${stableMs} heavySince=${heavySince}\n`,
+              );
+              mergeStallKillPending = true;
+              const pid = child.pid;
+              if (pid != null) {
+                treeKill(pid, 'SIGKILL', () => {});
+              } else {
+                try {
+                  child.kill('SIGKILL');
+                } catch {
+                  /* ignore */
+                }
+              }
+            }
+          }, 30_000);
+        }
       }
 
-      const timeoutHandle = setTimeout(() => {
+      timeoutHandle = setTimeout(() => {
         if (!child.killed) {
           clearClipHeartbeat();
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
+          }
           const pid = child.pid;
           if (pid != null) {
             treeKill(pid, 'SIGKILL', () => {});
@@ -681,21 +810,27 @@ export class YtDlpDownloadService {
           const msg = `Download timed out after ${hours} hours.`;
           endDownloadLog(`# timeout after ${hours}h`);
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
-          resolve({ id: request.id, success: false, outputPath: null, error: msg });
+          finish({ id: request.id, success: false, outputPath: null, error: msg });
         }
       }, DOWNLOAD_TIMEOUT_MS);
 
       child.on('error', (err) => {
-        clearTimeout(timeoutHandle);
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
         clearClipHeartbeat();
         endDownloadLog(`# spawn/process error: ${err.message}`);
-        this.activeProcesses.delete(request.id);
         onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: err.message });
-        resolve({ id: request.id, success: false, outputPath: null, error: err.message });
+        finish({ id: request.id, success: false, outputPath: null, error: err.message });
       });
 
       child.on('close', (exitCode, signal) => {
-        clearTimeout(timeoutHandle);
+        if (settled) {
+          return;
+        }
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+        }
         clearClipHeartbeat();
 
         if (outBuf.s.trim()) {
@@ -708,16 +843,36 @@ export class YtDlpDownloadService {
           downloadLogStream.write(`\n# --- stderr tail (unflushed) ---\n${errBuf.s}\n`);
         }
 
-        endDownloadLog(`# exitCode=${exitCode ?? 'null'} signal=${signal ?? 'null'}`);
+        if (mergeStallKillPending) {
+          mergeStallKillPending = false;
+          rmSync(tempDir, { recursive: true, force: true });
+          endDownloadLog(`# exitCode=${exitCode ?? 'null'} signal=${signal ?? 'null'} (merge-stall watchdog)`);
+          onProgress({
+            id: request.id,
+            phase: 'downloading',
+            percent: Math.min(lastShownPercent, 99),
+            speed: '',
+            eta: '',
+            message: 'Merge stalled — retrying with sequential fragments…',
+          });
+          finish({
+            id: request.id,
+            success: false,
+            outputPath: null,
+            error: 'Merge step produced no disk progress. Retrying once with safer section settings.',
+            mergeStallRetry: allowMergeStallRecovery,
+          });
+          return;
+        }
 
-        this.activeProcesses.delete(request.id);
+        endDownloadLog(`# exitCode=${exitCode ?? 'null'} signal=${signal ?? 'null'}`);
 
         const userCancelled = this.userCancelledDownloadIds.delete(request.id);
         if (userCancelled || signal === 'SIGTERM' || signal === 'SIGKILL') {
           rmSync(tempDir, { recursive: true, force: true });
           const msg = 'Download cancelled.';
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
-          resolve({ id: request.id, success: false, outputPath: null, error: msg });
+          finish({ id: request.id, success: false, outputPath: null, error: msg });
           return;
         }
 
@@ -734,7 +889,7 @@ export class YtDlpDownloadService {
             const msg =
               'Download reported success but no output file was found. Check Settings → download logs, or try a lower quality / Opus audio.';
             onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
-            resolve({ id: request.id, success: false, outputPath: null, error: msg });
+            finish({ id: request.id, success: false, outputPath: null, error: msg });
             return;
           }
           onProgress({
@@ -745,12 +900,12 @@ export class YtDlpDownloadService {
             eta: '',
             message: 'Download complete!',
           });
-          resolve({ id: request.id, success: true, outputPath: finalPath });
+          finish({ id: request.id, success: true, outputPath: finalPath });
         } else {
           rmSync(tempDir, { recursive: true, force: true });
           const errorMsg = this.extractErrorMessage(stderr);
           onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: errorMsg });
-          resolve({ id: request.id, success: false, outputPath: null, error: errorMsg });
+          finish({ id: request.id, success: false, outputPath: null, error: errorMsg });
         }
       });
 
@@ -763,36 +918,96 @@ export class YtDlpDownloadService {
      */
     const tryM4aCopyRemux = this.prefersM4aDashAudio(request);
 
-    const runWithRemuxMode = (selection: string[] | undefined, mode: 'copy' | 'encode'): string[] =>
-      this.buildArgs(request, outputTemplate, tempDir, ffmpeg.resolvedPath, settings, selection, mode);
+    const runWithRemuxMode = (
+      selection: string[] | undefined,
+      mode: 'copy' | 'encode',
+      sectionConc?: number | 'omit',
+    ): string[] =>
+      this.buildArgs(
+        request,
+        outputTemplate,
+        tempDir,
+        ffmpeg.resolvedPath,
+        settings,
+        selection,
+        mode,
+        sectionConc,
+      );
 
-    let result = await runAttempt(runWithRemuxMode(undefined, tryM4aCopyRemux ? 'copy' : 'encode'));
+    const initialMode: 'copy' | 'encode' = tryM4aCopyRemux ? 'copy' : 'encode';
+    let result = await runAttempt(runWithRemuxMode(undefined, initialMode), { allowMergeStallRecovery: true });
+    if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+      mkdirSync(tempDir, { recursive: true });
+      result = await runAttempt(runWithRemuxMode(undefined, initialMode, 'omit'), {
+        allowMergeStallRecovery: false,
+      });
+    }
     if (
       !result.success &&
       tryM4aCopyRemux &&
       this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
     ) {
-      result = await runAttempt(runWithRemuxMode(undefined, 'encode'));
+      result = await runAttempt(runWithRemuxMode(undefined, 'encode'), { allowMergeStallRecovery: true });
+      if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+        mkdirSync(tempDir, { recursive: true });
+        result = await runAttempt(runWithRemuxMode(undefined, 'encode', 'omit'), { allowMergeStallRecovery: false });
+      }
     }
 
     if (!result.success && this.isFormatNotAvailableError(result.error)) {
-      result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'));
+      result = await runAttempt(
+        runWithRemuxMode(this.buildFallbackSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'),
+        { allowMergeStallRecovery: true },
+      );
+      if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+        mkdirSync(tempDir, { recursive: true });
+        result = await runAttempt(
+          runWithRemuxMode(this.buildFallbackSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode', 'omit'),
+          { allowMergeStallRecovery: false },
+        );
+      }
       if (
         !result.success &&
         tryM4aCopyRemux &&
         this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
       ) {
-        result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), 'encode'));
+        result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), 'encode'), {
+          allowMergeStallRecovery: true,
+        });
+        if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+          mkdirSync(tempDir, { recursive: true });
+          result = await runAttempt(runWithRemuxMode(this.buildFallbackSelectionArgs(request), 'encode', 'omit'), {
+            allowMergeStallRecovery: false,
+          });
+        }
       }
     }
     if (!result.success && this.isFormatNotAvailableError(result.error)) {
-      result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'));
+      result = await runAttempt(
+        runWithRemuxMode(this.buildLastResortSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode'),
+        { allowMergeStallRecovery: true },
+      );
+      if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+        mkdirSync(tempDir, { recursive: true });
+        result = await runAttempt(
+          runWithRemuxMode(this.buildLastResortSelectionArgs(request), tryM4aCopyRemux ? 'copy' : 'encode', 'omit'),
+          { allowMergeStallRecovery: false },
+        );
+      }
       if (
         !result.success &&
         tryM4aCopyRemux &&
         this.shouldRetryMp4WithAacEncodeAfterCopyRemuxFailure(result.error)
       ) {
-        result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), 'encode'));
+        result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), 'encode'), {
+          allowMergeStallRecovery: true,
+        });
+        if (result.mergeStallRetry && this.requiresPartialSectionDownload(request)) {
+          mkdirSync(tempDir, { recursive: true });
+          result = await runAttempt(runWithRemuxMode(this.buildLastResortSelectionArgs(request), 'encode', 'omit'), {
+            allowMergeStallRecovery: false,
+          });
+        }
       }
     }
     return result;
@@ -880,6 +1095,11 @@ export class YtDlpDownloadService {
     selectionOverride?: string[],
     /** MP4 + AAC: try stream-copy first (m4a DASH); `encode` = Opus→AAC fallback. */
     mp4AacRemuxMode: 'copy' | 'encode' = 'copy',
+    /**
+     * Section jobs: override parallel fragments from settings, or `omit` for yt-dlp default (sequential)
+     * after merge-stall recovery.
+     */
+    sectionConcurrencyOverride?: number | 'omit',
   ): string[] {
     const args: string[] = [
       '--ignore-config',
@@ -906,7 +1126,17 @@ export class YtDlpDownloadService {
     }
 
     if (this.requiresPartialSectionDownload(request)) {
-      args.push('--concurrent-fragments', String(SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS));
+      if (sectionConcurrencyOverride !== 'omit') {
+        const n =
+          sectionConcurrencyOverride != null
+            ? clampSectionConcurrentFragments(sectionConcurrencyOverride)
+            : clampSectionConcurrentFragments(settings.sectionConcurrentFragments);
+        args.push('--concurrent-fragments', String(n));
+      }
+      /** Fewer `.part` files + AV scanning churn on slow disks (section jobs only). */
+      args.push('--no-part');
+      /** Cleaner cuts at section boundaries; yt-dlp passes keyframe forcing into ffmpeg. */
+      args.push('--force-keyframes-at-cuts');
       args.push('--http-chunk-size', SECTION_HTTP_CHUNK_SIZE);
       /** Long VODs / slow CDNs: avoid dropping connections while fragments still arrive. */
       args.push('--socket-timeout', '120');

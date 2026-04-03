@@ -211,6 +211,20 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
           </label>
         </div>
 
+        <label className="field">
+          <span>Section clip: parallel fragments (1–32)</span>
+          <input
+            type="number"
+            value={draft.sectionConcurrentFragments}
+            min={1}
+            max={32}
+            onChange={(event) => controller.updateField('sectionConcurrentFragments', Number(event.target.value))}
+          />
+          <span className="muted" style={{ fontSize: '0.82rem', display: 'block', marginTop: 4 }}>
+            Used only for timed section downloads. Lower if merge stalls on a slow PC; higher for speed on fast disks.
+          </span>
+        </label>
+
         <div className="grid-two">
           <label className="field">
             <span>Default output format</span>
