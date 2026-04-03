@@ -58,6 +58,7 @@ const ToolCard = ({
   modeValue,
   onModeChange,
   customPaths,
+  showManagedDownload = true,
 }: {
   title: string;
   description: string;
@@ -68,6 +69,8 @@ const ToolCard = ({
   modeValue: string;
   onModeChange: (value: string) => void;
   customPaths: Array<{ label: string; value: string; onBrowse: () => void }>;
+  /** When false, hide bundled download/update (e.g. Deno is installed separately). */
+  showManagedDownload?: boolean;
 }): JSX.Element => {
   const isReady = status?.status === 'ready';
   const secondaryReady = secondaryStatus ? secondaryStatus.status === 'ready' : undefined;
@@ -104,21 +107,22 @@ const ToolCard = ({
         )}
       </div>
 
-      {downloadState.isDownloading ? (
-        <DownloadProgressBar progress={downloadState.progress} />
-      ) : (
-        <div className="tool-card-actions">
-          <button className="button primary compact" onClick={onDownload} disabled={downloadState.isDownloading}>
-            {allReady ? 'Update' : 'Download'} {title}
-          </button>
-          {downloadState.progress?.phase === 'complete' && (
-            <span className="tool-success-msg">{downloadState.progress.message}</span>
-          )}
-          {downloadState.progress?.phase === 'error' && (
-            <span className="tool-error-msg">{downloadState.progress.message}</span>
-          )}
-        </div>
-      )}
+      {showManagedDownload &&
+        (downloadState.isDownloading ? (
+          <DownloadProgressBar progress={downloadState.progress} />
+        ) : (
+          <div className="tool-card-actions">
+            <button className="button primary compact" onClick={onDownload} disabled={downloadState.isDownloading}>
+              {allReady ? 'Update' : 'Download'} {title}
+            </button>
+            {downloadState.progress?.phase === 'complete' && (
+              <span className="tool-success-msg">{downloadState.progress.message}</span>
+            )}
+            {downloadState.progress?.phase === 'error' && (
+              <span className="tool-error-msg">{downloadState.progress.message}</span>
+            )}
+          </div>
+        ))}
 
       <div className="tool-card-config">
         <label className="field" style={{ maxWidth: 200 }}>
@@ -414,6 +418,29 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
             { label: 'yt-dlp executable', value: draft.ytDlpPath, onBrowse: () => void controller.chooseBinaryPath('yt-dlp') },
           ]}
         />
+
+        <div className="stack gap-sm">
+          <ToolCard
+            title="Deno"
+            description="JavaScript runtime for YouTube extraction in yt-dlp. Install Deno 2+ (e.g. from deno.com) or place deno.exe in the app binaries folder when using Bundled mode."
+            status={binaryStatus.find((s) => s.toolName === 'deno') ?? null}
+            downloadState={{ isDownloading: false, progress: null }}
+            onDownload={() => {}}
+            showManagedDownload={false}
+            modeValue={draft.denoMode}
+            onModeChange={(value) => controller.updateField('denoMode', value as AppSettings['denoMode'])}
+            customPaths={[
+              { label: 'deno executable', value: draft.denoPath, onBrowse: () => void controller.chooseBinaryPath('deno') },
+            ]}
+          />
+          <p className="muted" style={{ fontSize: '0.82rem', margin: 0 }}>
+            Background:{' '}
+            <a href="https://github.com/yt-dlp/yt-dlp/issues/14404" target="_blank" rel="noreferrer">
+              yt-dlp — upcoming requirements for YouTube downloads
+            </a>
+            . Yoinkr passes <code>--js-runtimes deno</code> to yt-dlp when Deno is detected, otherwise <code>node</code>.
+          </p>
+        </div>
 
         <ToolCard
           title="ffmpeg & ffprobe"

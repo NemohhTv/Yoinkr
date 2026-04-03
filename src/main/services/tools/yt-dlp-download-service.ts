@@ -19,6 +19,7 @@ import { ServiceError } from '@main/services/shared/service-error';
 import type { BinaryResolver } from './binary-resolver';
 import { findLatestOutputByDownloadId } from './download-output-resolver';
 import { buildYtDlpCookieArgs, prepareYtDlpCookieSource } from './yt-dlp-cookie-args';
+import { getDenoPathEnvForYtDlpSpawn, getYtDlpJsRuntimeCliArgs } from './yt-dlp-js-runtime';
 import type { ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
 import type { AppSettings } from '@shared/types/settings';
 
@@ -146,6 +147,18 @@ export class YtDlpDownloadService {
     private readonly pathsService: AppPathsService,
     private readonly binaryResolver: BinaryResolver,
   ) {}
+
+  private buildYtDlpChildEnv(settings: AppSettings): NodeJS.ProcessEnv {
+    const denoPathPatch = getDenoPathEnvForYtDlpSpawn(settings, this.binaryResolver);
+    return {
+      ...process.env,
+      ...denoPathPatch,
+      PYTHONUNBUFFERED: '1',
+      PYTHONIOENCODING: 'utf-8',
+      FORCE_COLOR: '0',
+      NO_COLOR: '1',
+    } as NodeJS.ProcessEnv;
+  }
 
   cancelItem(id: string): boolean {
     this.userCancelledDownloadIds.add(id);
@@ -283,14 +296,7 @@ export class YtDlpDownloadService {
       const child = spawn(ytDlp.resolvedPath!, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-          /** Avoid tools switching to “no TTY” / no-progress behavior when piped. */
-          FORCE_COLOR: '0',
-          NO_COLOR: '1',
-        },
+        env: this.buildYtDlpChildEnv(settings),
       });
 
       this.activeProcesses.set(request.id, child);
@@ -1072,6 +1078,7 @@ export class YtDlpDownloadService {
     requestId: string,
     streamType: 'video' | 'audio',
     onProgress: ProgressCallback,
+    settings: AppSettings,
     clipLogLine?: (line: string) => void,
   ): Promise<{ success: boolean; error?: string }> {
     return new Promise((resolve) => {
@@ -1085,13 +1092,7 @@ export class YtDlpDownloadService {
       const child = spawn(ytDlpPath, args, {
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-          FORCE_COLOR: '0',
-          NO_COLOR: '1',
-        },
+        env: this.buildYtDlpChildEnv(settings),
       });
 
       const processKey = `${requestId}__${streamType}`;
@@ -1455,8 +1456,7 @@ export class YtDlpDownloadService {
   ): string[] {
     const commonArgs: string[] = [
       '--ignore-config',
-      '--js-runtimes',
-      'node',
+      ...getYtDlpJsRuntimeCliArgs(settings, this.binaryResolver),
       '--no-playlist',
       '--newline',
       '--no-warnings',
@@ -1588,6 +1588,7 @@ export class YtDlpDownloadService {
         request.id,
         'video',
         onProgress,
+        settings,
         clipLogLine,
       );
     } finally {
@@ -1718,7 +1719,7 @@ export class YtDlpDownloadService {
       eta: '',
       message: 'Downloading audio clip…',
     });
-    const result = await this.runSplitStream(ytDlp.resolvedPath, args, request.id, 'video', onProgress);
+    const result = await this.runSplitStream(ytDlp.resolvedPath, args, request.id, 'video', onProgress, settings);
 
     try {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1807,7 +1808,7 @@ export class YtDlpDownloadService {
       eta: '',
       message: 'Downloading video clip…',
     });
-    const result = await this.runSplitStream(ytDlp.resolvedPath, videoArgs, request.id, 'video', onProgress);
+    const result = await this.runSplitStream(ytDlp.resolvedPath, videoArgs, request.id, 'video', onProgress, settings);
 
     if (!result.success) {
       try {
@@ -1903,7 +1904,7 @@ export class YtDlpDownloadService {
   ): string[] {
     const args: string[] = [
       '--ignore-config',
-      '--js-runtimes', 'node',
+      ...getYtDlpJsRuntimeCliArgs(settings, this.binaryResolver),
       '--no-playlist', '--newline', '--no-warnings', '--progress',
       /** Plain output helps regex; stderr is where `[download]` progress usually goes when piped. */
       '--color', 'stderr:never',

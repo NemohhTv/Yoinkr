@@ -14,7 +14,7 @@ export interface DirectoryInfo {
 }
 
 export interface BinaryStatus {
-  toolName: 'yt-dlp' | 'ffmpeg' | 'ffprobe';
+  toolName: 'yt-dlp' | 'deno' | 'ffmpeg' | 'ffprobe';
   mode: 'bundled' | 'custom' | 'auto-detect';
   resolvedPath: string | null;
   exists: boolean;

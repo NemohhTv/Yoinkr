@@ -13,6 +13,9 @@ export interface AppSettings {
   maxConcurrentProcessingJobs: number;
   ytDlpMode: BinaryMode;
   ytDlpPath: string;
+  /** Deno ≥2 for YouTube JS challenges when using yt-dlp; see yt-dlp release notes / issue #14404. */
+  denoMode: BinaryMode;
+  denoPath: string;
   ffmpegMode: BinaryMode;
   ffmpegPath: string;
   ffprobePath: string;
@@ -53,6 +56,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxConcurrentProcessingJobs: 1,
   ytDlpMode: 'auto-detect',
   ytDlpPath: '',
+  denoMode: 'auto-detect',
+  denoPath: '',
   ffmpegMode: 'auto-detect',
   ffmpegPath: '',
   ffprobePath: '',

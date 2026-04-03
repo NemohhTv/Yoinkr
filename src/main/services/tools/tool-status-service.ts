@@ -11,7 +11,7 @@ export class ToolStatusService {
   ) {}
 
   async getBinaryStatuses(settings: AppSettings): Promise<BinaryStatus[]> {
-    const tools: BinaryStatus['toolName'][] = ['yt-dlp', 'ffmpeg', 'ffprobe'];
+    const tools: BinaryStatus['toolName'][] = ['yt-dlp', 'deno', 'ffmpeg', 'ffprobe'];
 
     return Promise.all(
       tools.map(async (toolName) => {

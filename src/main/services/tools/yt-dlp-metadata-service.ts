@@ -10,6 +10,7 @@ import type { AppSettings } from '@shared/types/settings';
 
 import { BinaryResolver } from './binary-resolver';
 import { getYtDlpCookieCacheFingerprint, prepareYtDlpCookieSource } from './yt-dlp-cookie-args';
+import { getDenoPathEnvForYtDlpSpawn, getYtDlpJsRuntimeCliArgs } from './yt-dlp-js-runtime';
 import type { MetadataCache } from './metadata-cache';
 
 interface YtDlpChapter {
@@ -110,11 +111,12 @@ export class YtDlpMetadataService {
     }
 
     const cookieArgs = cookiePrepared.args;
+    const denoEnv = getDenoPathEnvForYtDlpSpawn(settings, this.binaryResolver);
     const result = await this.processRunner.run({
       command: ytDlpBinary.resolvedPath,
       args: [
         '--ignore-config',
-        '--js-runtimes', 'node',
+        ...getYtDlpJsRuntimeCliArgs(settings, this.binaryResolver),
         ...cookieArgs,
         '--dump-single-json',
         '--no-playlist',
@@ -125,6 +127,7 @@ export class YtDlpMetadataService {
       /** Long 4K VODs return huge format JSON; small buffer/timeouts look like a stuck “Add URL” step. */
       timeoutMs: 120_000,
       maxBufferBytes: 48 * 1024 * 1024,
+      ...(denoEnv ? { env: denoEnv } : {}),
     });
 
     if (result.exitCode !== 0) {

@@ -14,6 +14,7 @@ export interface ResolvedBinary {
 
 const toolExecutables: Record<BinaryStatus['toolName'], string[]> = {
   'yt-dlp': ['yt-dlp.exe', 'yt-dlp'],
+  deno: ['deno.exe', 'deno'],
   ffmpeg: ['ffmpeg.exe', 'ffmpeg'],
   ffprobe: ['ffprobe.exe', 'ffprobe'],
 };
@@ -22,7 +23,12 @@ export class BinaryResolver {
   constructor(private readonly pathsService: AppPathsService) {}
 
   resolveTool(toolName: BinaryStatus['toolName'], settings: AppSettings): ResolvedBinary {
-    const mode = toolName === 'yt-dlp' ? settings.ytDlpMode : settings.ffmpegMode;
+    const mode =
+      toolName === 'yt-dlp'
+        ? settings.ytDlpMode
+        : toolName === 'deno'
+          ? settings.denoMode
+          : settings.ffmpegMode;
     const configuredPath = this.getConfiguredPath(toolName, settings);
 
     if (mode === 'custom') {
@@ -57,6 +63,9 @@ export class BinaryResolver {
   private getConfiguredPath(toolName: BinaryStatus['toolName'], settings: AppSettings): string {
     if (toolName === 'yt-dlp') {
       return settings.ytDlpPath;
+    }
+    if (toolName === 'deno') {
+      return settings.denoPath;
     }
 
     return toolName === 'ffmpeg' ? settings.ffmpegPath : settings.ffprobePath;

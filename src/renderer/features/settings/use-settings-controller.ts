@@ -148,6 +148,12 @@ export const useSettingsController = () => {
       return;
     }
 
+    if (toolName === 'deno') {
+      updateField('denoPath', selectedPath);
+      updateField('denoMode', 'custom');
+      return;
+    }
+
     if (toolName === 'ffmpeg') {
       updateField('ffmpegPath', selectedPath);
       updateField('ffmpegMode', 'custom');

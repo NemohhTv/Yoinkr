@@ -10,6 +10,8 @@ const settingsSchema = z.object({
   maxConcurrentProcessingJobs: z.number().int().min(1).max(8),
   ytDlpMode: z.enum(['bundled', 'custom', 'auto-detect']),
   ytDlpPath: z.string(),
+  denoMode: z.enum(['bundled', 'custom', 'auto-detect']),
+  denoPath: z.string(),
   ffmpegMode: z.enum(['bundled', 'custom', 'auto-detect']),
   ffmpegPath: z.string(),
   ffprobePath: z.string(),

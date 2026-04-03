@@ -8,6 +8,8 @@ export interface ProcessRunOptions {
   timeoutMs?: number;
   maxBufferBytes?: number;
   cwd?: string;
+  /** Merged on top of `process.env` when spawning. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ProcessRunResult {
@@ -23,12 +25,14 @@ export class ProcessRunner {
     timeoutMs = 20000,
     maxBufferBytes = 16 * 1024 * 1024,
     cwd,
+    env,
   }: ProcessRunOptions): Promise<ProcessRunResult> {
     return new Promise<ProcessRunResult>((resolve, reject) => {
       const child = spawn(command, args, {
         cwd,
         windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe'],
+        env: env ? { ...process.env, ...env } : process.env,
       });
 
       let stdout = '';
