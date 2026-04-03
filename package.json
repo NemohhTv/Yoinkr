@@ -1,7 +1,7 @@
 {
   "name": "yoinkr",
   "productName": "Yoinkr",
-  "version": "0.2.22",
+  "version": "0.2.23",
   "description": "Windows-first desktop media workflow app for download-to-edit pipelines.",
   "main": "out/main/index.js",
   "author": {
