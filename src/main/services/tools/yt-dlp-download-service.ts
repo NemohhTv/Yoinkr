@@ -117,7 +117,12 @@ const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
  * concurrency reduces wall-clock time vs strictly sequential fetches.
  */
 /** Lower than full-video DASH: fewer edge-case stalls on Windows during section merge/remux. */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 8;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 4;
+
+/** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
+function stripElapsedSuffixFromProgressMessage(msg: string): string {
+  return msg.replace(/(?:\s*\(\d+s\))+$/u, '').trim();
+}
 
 export class YtDlpDownloadService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
@@ -267,7 +272,10 @@ export class YtDlpDownloadService {
         lastProgressEmitAt = Date.now();
         if (p.phase === 'merging' || p.phase === 'converting') {
           heavyPostprocessSince ??= Date.now();
-          lastPostUi = { phase: p.phase, message: p.message };
+          lastPostUi = {
+            phase: p.phase,
+            message: stripElapsedSuffixFromProgressMessage(p.message),
+          };
         }
         let out = p;
         if (p.phase === 'downloading') {
@@ -561,7 +569,11 @@ export class YtDlpDownloadService {
               tl.includes('[mux') ||
               tl.includes('remux') ||
               tl.includes('[fixup') ||
-              tl.includes('[videoremuxer')
+              tl.includes('[videoremuxer') ||
+              tl.includes('stream #') ||
+              tl.includes('output #') ||
+              /\bframe=\s*\d+/i.test(line) ||
+              /\bsize=\s*\d+/i.test(line)
             ) {
               lastSubstantiveStderrAt = Date.now();
             }
@@ -586,6 +598,7 @@ export class YtDlpDownloadService {
 
           if (inHeavyPostprocess) {
             const ui = lastPostUi ?? { phase: 'merging' as const, message: mergingMessage };
+            const baseMsg = stripElapsedSuffixFromProgressMessage(ui.message) || mergingMessage;
             const sec = Math.floor((Date.now() - (heavyPostprocessSince ?? Date.now())) / 1000);
             emit({
               id: request.id,
@@ -593,7 +606,7 @@ export class YtDlpDownloadService {
               percent: 99,
               speed: '',
               eta: '',
-              message: sec > 0 ? `${ui.message} (${sec}s)` : ui.message,
+              message: sec > 0 ? `${baseMsg} (${sec}s)` : baseMsg,
             });
             return;
           }
