@@ -1,5 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+} from 'node:fs';
 import type { WriteStream } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import treeKill from 'tree-kill';
@@ -124,6 +133,90 @@ function clampSectionConcurrentFragments(n: number): number {
   return Math.min(32, Math.max(1, Math.floor(Number.isFinite(n) ? n : 8)));
 }
 
+/** Parse ffmpeg stderr `time=HH:MM:SS.xx` (centiseconds) to seconds. */
+function parseFfmpegTimeToSeconds(timeStr: string): number {
+  const m = timeStr.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{2})$/);
+  if (!m) {
+    return 0;
+  }
+  const h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const s = parseInt(m[3], 10);
+  const frac = parseInt(m[4], 10) / 100;
+  return h * 3600 + min * 60 + s + frac;
+}
+
+function normalizeYtDlpHeaders(raw: unknown): Record<string, string> | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'string' && v.length > 0) {
+      out[k] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** ffmpeg `-headers` expects CRLF-terminated `Key: value` lines. */
+function ffmpegHeadersArg(headers: Record<string, string> | undefined): string[] {
+  if (!headers || Object.keys(headers).length === 0) {
+    return [];
+  }
+  const block = Object.entries(headers)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\r\n');
+  return ['-headers', `${block}\r\n`];
+}
+
+interface SectionDirectResolvedStream {
+  url: string;
+  headers?: Record<string, string>;
+  vcodec: string;
+  acodec: string;
+}
+
+function parseSectionDirectStreamsFromJson(info: unknown): SectionDirectResolvedStream[] | null {
+  if (!info || typeof info !== 'object') {
+    return null;
+  }
+  const o = info as Record<string, unknown>;
+  const rf = o.requested_formats;
+  if (Array.isArray(rf) && rf.length > 0) {
+    const streams: SectionDirectResolvedStream[] = [];
+    for (const item of rf) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const f = item as Record<string, unknown>;
+      const url = f.url;
+      if (typeof url !== 'string' || !url.trim()) {
+        continue;
+      }
+      streams.push({
+        url: url.trim(),
+        headers: normalizeYtDlpHeaders(f.http_headers),
+        vcodec: String(f.vcodec ?? 'none'),
+        acodec: String(f.acodec ?? 'none'),
+      });
+    }
+    return streams.length > 0 ? streams : null;
+  }
+  const url = o.url;
+  if (typeof url === 'string' && url.trim()) {
+    return [
+      {
+        url: url.trim(),
+        headers: normalizeYtDlpHeaders(o.http_headers),
+        vcodec: String(o.vcodec ?? 'none'),
+        acodec: String(o.acodec ?? 'none'),
+      },
+    ];
+  }
+  return null;
+}
+
 /** First line of `tool -version` for download logs. */
 function toolVersionLine(command: string | null | undefined, versionArgs: string[]): string {
   if (!command || !existsSync(command)) {
@@ -230,8 +323,6 @@ export class YtDlpDownloadService {
     }
 
     const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
-    const tempDir = join(downloadDir, `.tmp-${request.id}`);
-    mkdirSync(tempDir, { recursive: true });
     const outputTemplate = join(downloadDir, `${request.id}__%(title).200B.%(ext)s`);
 
     const isClipDownload = this.requiresPartialSectionDownload(request);
@@ -245,6 +336,31 @@ export class YtDlpDownloadService {
       eta: '',
       message: isClipDownload ? 'Starting clip download…' : 'Starting download...',
     });
+
+    if (isClipDownload) {
+      const directResult = await this.downloadSectionDirect(
+        request,
+        settings,
+        onProgress,
+        downloadDir,
+        ytDlp.resolvedPath!,
+        ffmpeg.resolvedPath!,
+      );
+      if (directResult !== null) {
+        return directResult;
+      }
+      onProgress({
+        id: request.id,
+        phase: 'downloading',
+        percent: 0,
+        speed: '',
+        eta: '',
+        message: 'Retrying with fragment-based download…',
+      });
+    }
+
+    const tempDir = join(downloadDir, `.tmp-${request.id}`);
+    mkdirSync(tempDir, { recursive: true });
 
     const runAttempt = (
       args: string[],
@@ -1073,6 +1189,461 @@ export class YtDlpDownloadService {
     );
   }
 
+  private buildSectionDirectOutputPath(request: ItemDownloadRequest, downloadDir: string): string {
+    const base = sanitizeDownloadDisplayName(request.title);
+    let ext: string;
+    if (request.mediaType === 'audio-only' || request.audioOnly) {
+      ext = this.mapAudioFormat(request.outputFormat);
+    } else if (request.outputFormat === 'original') {
+      ext = 'mp4';
+    } else {
+      ext = request.outputFormat;
+    }
+    return join(downloadDir, `${request.id}__${base}.${ext}`);
+  }
+
+  private appendSectionDirectAudioOnlyCodec(
+    ffmpegArgs: string[],
+    request: ItemDownloadRequest,
+    audioStream: SectionDirectResolvedStream,
+  ): void {
+    const ac = audioStream.acodec.toLowerCase();
+    const opus = ac.includes('opus');
+    const fmt = request.outputFormat;
+    if (fmt === 'webm') {
+      ffmpegArgs.push('-c:a', 'copy');
+      return;
+    }
+    if (opus) {
+      if (fmt === 'mp3') {
+        ffmpegArgs.push('-c:a', 'libmp3lame', '-b:a', '192k');
+      } else if (fmt === 'm4a' || fmt === 'mp4') {
+        ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k', '-aac_coder', 'fast', '-threads', '0');
+      } else if (fmt === 'wav') {
+        ffmpegArgs.push('-c:a', 'pcm_s16le');
+      } else if (fmt === 'flac') {
+        ffmpegArgs.push('-c:a', 'flac');
+      } else {
+        ffmpegArgs.push('-c:a', 'aac', '-b:a', '192k', '-aac_coder', 'fast', '-threads', '0');
+      }
+      return;
+    }
+    ffmpegArgs.push('-c:a', 'copy');
+  }
+
+  /**
+   * Fast section download: resolve stream URLs with yt-dlp `-j`, then ffmpeg `-ss`/`-to` before `-i`.
+   * Returns `null` so the caller falls back to `--download-sections` when this path cannot run or ffmpeg fails.
+   */
+  private async downloadSectionDirect(
+    request: ItemDownloadRequest,
+    settings: AppSettings,
+    onProgress: ProgressCallback,
+    downloadDir: string,
+    ytDlpPath: string,
+    ffmpegPath: string,
+  ): Promise<ItemDownloadResult | null> {
+    if (!this.requiresPartialSectionDownload(request)) {
+      return null;
+    }
+    const dur = request.durationSeconds;
+    if (dur == null || dur <= 0) {
+      return null;
+    }
+    if (!existsSync(ffmpegPath)) {
+      return null;
+    }
+
+    const start = request.sectionStartSec ?? 0;
+    const end = request.sectionEndSec ?? dur;
+    const clipDuration = Math.max(0.1, end - start);
+
+    const logsDownloadsDir = join(this.pathsService.getPaths().managedDirectories.logs, 'downloads');
+    let logStream: WriteStream | null = null;
+    const logLine = (s: string): void => {
+      try {
+        logStream?.write(`${s}\n`);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    onProgress({
+      id: request.id,
+      phase: 'downloading',
+      percent: 0,
+      speed: '',
+      eta: '',
+      message: 'Clip: resolving stream URLs…',
+    });
+
+    const jsonArgs = [
+      '--ignore-config',
+      '--js-runtimes',
+      'node',
+      '--no-playlist',
+      '--no-warnings',
+      ...this.buildSelectionArgs(request),
+      ...buildYtDlpCookieArgs(settings, this.pathsService),
+      '-j',
+      request.url,
+    ];
+
+    if (settings.saveDownloadLogs) {
+      try {
+        mkdirSync(logsDownloadsDir, { recursive: true });
+        const safeTime = new Date().toISOString().replace(/[:.]/g, '-');
+        const logPath = join(logsDownloadsDir, `${request.id.slice(0, 8)}-direct-${safeTime}.log`);
+        logStream = createWriteStream(logPath, { flags: 'a' });
+        logLine('# Yoinkr section-direct (ffmpeg stream-seek) log');
+        logLine(`# id=${request.id}`);
+        logLine(`# url=${request.url}`);
+        logLine(`# yt-dlp_version=${toolVersionLine(ytDlpPath, ['--version'])}`);
+        logLine(`# ffmpeg_version=${toolVersionLine(ffmpegPath, ['-version'])}`);
+        logLine(`# yt-dlp_json_args=${JSON.stringify(jsonArgs)}`);
+      } catch {
+        logStream = null;
+      }
+    }
+
+    const probe = spawnSync(ytDlpPath, jsonArgs, {
+      windowsHide: true,
+      encoding: 'utf8',
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 60_000,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' },
+    });
+
+    if (probe.error || probe.status !== 0) {
+      logLine(`# yt-dlp -j failed status=${probe.status} err=${probe.error?.message ?? ''}`);
+      logStream?.end();
+      return null;
+    }
+
+    let info: unknown;
+    try {
+      const raw = (probe.stdout ?? '').trim();
+      if (!raw) {
+        logStream?.end();
+        return null;
+      }
+      info = JSON.parse(raw);
+    } catch {
+      logLine('# JSON parse failed');
+      logStream?.end();
+      return null;
+    }
+
+    const streams = parseSectionDirectStreamsFromJson(info);
+    if (!streams || streams.length === 0) {
+      logLine('# No stream URLs in JSON');
+      logStream?.end();
+      return null;
+    }
+
+    const isVid = (s: SectionDirectResolvedStream) => s.vcodec && s.vcodec !== 'none';
+    const isAud = (s: SectionDirectResolvedStream) => s.acodec && s.acodec !== 'none';
+
+    let videoStream: SectionDirectResolvedStream | undefined;
+    let audioStream: SectionDirectResolvedStream | undefined;
+    let singleCombined: SectionDirectResolvedStream | undefined;
+
+    if (streams.length >= 2) {
+      videoStream = streams.find(isVid);
+      audioStream = streams.find(isAud);
+      if (!videoStream || !audioStream) {
+        logLine('# Could not split video/audio from requested_formats');
+        logStream?.end();
+        return null;
+      }
+    } else {
+      const one = streams[0]!;
+      if (isVid(one) && isAud(one)) {
+        singleCombined = one;
+      } else if (isVid(one)) {
+        videoStream = one;
+      } else if (isAud(one)) {
+        audioStream = one;
+      } else {
+        logStream?.end();
+        return null;
+      }
+    }
+
+    const wantAudioOnly = request.mediaType === 'audio-only' || request.audioOnly;
+    const wantVideoOnly = request.mediaType === 'video-only';
+    if (wantAudioOnly && !audioStream && !singleCombined) {
+      logStream?.end();
+      return null;
+    }
+    if (wantVideoOnly && !videoStream && !singleCombined) {
+      logStream?.end();
+      return null;
+    }
+    if (!wantAudioOnly && !wantVideoOnly && !(singleCombined || (videoStream && audioStream))) {
+      logStream?.end();
+      return null;
+    }
+
+    const outPath = this.buildSectionDirectOutputPath(request, downloadDir);
+    if (existsSync(outPath)) {
+      try {
+        unlinkSync(outPath);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const audioForCodec =
+      audioStream ?? (singleCombined && isAud(singleCombined) ? singleCombined : undefined);
+    const opusAudio =
+      audioForCodec != null &&
+      audioForCodec.acodec.toLowerCase().includes('opus') &&
+      request.outputFormat !== 'webm';
+    const needAacForMergedMp4 =
+      !wantAudioOnly &&
+      !wantVideoOnly &&
+      request.outputFormat === 'mp4' &&
+      request.audioPreference === 'aac' &&
+      opusAudio;
+
+    const muxQ = ['-max_muxing_queue_size', SECTION_FFMPEG_MUX_QUEUE];
+    const ffmpegArgs: string[] = ['-nostdin', '-hide_banner', '-y', ...muxQ];
+
+    const pushInput = (headers: Record<string, string> | undefined, url: string): void => {
+      ffmpegArgs.push(...ffmpegHeadersArg(headers), '-ss', String(start), '-to', String(end), '-i', url);
+    };
+
+    if (singleCombined) {
+      pushInput(singleCombined.headers, singleCombined.url);
+      if (wantAudioOnly) {
+        ffmpegArgs.push('-map', '0:a:0');
+        this.appendSectionDirectAudioOnlyCodec(ffmpegArgs, request, singleCombined);
+      } else if (wantVideoOnly) {
+        ffmpegArgs.push('-map', '0:v:0', '-c:v', 'copy');
+      } else {
+        ffmpegArgs.push('-map', '0:v:0', '-map', '0:a:0');
+        if (needAacForMergedMp4) {
+          ffmpegArgs.push(
+            '-c:v',
+            'copy',
+            '-c:a',
+            'aac',
+            '-b:a',
+            '192k',
+            '-aac_coder',
+            'fast',
+            '-threads',
+            '0',
+          );
+        } else {
+          ffmpegArgs.push('-c', 'copy');
+        }
+      }
+    } else if (videoStream && audioStream) {
+      pushInput(videoStream.headers, videoStream.url);
+      pushInput(audioStream.headers, audioStream.url);
+      ffmpegArgs.push('-map', '0:v:0', '-map', '1:a:0');
+      if (needAacForMergedMp4) {
+        ffmpegArgs.push(
+          '-c:v',
+          'copy',
+          '-c:a',
+          'aac',
+          '-b:a',
+          '192k',
+          '-aac_coder',
+          'fast',
+          '-threads',
+          '0',
+        );
+      } else {
+        ffmpegArgs.push('-c', 'copy');
+      }
+    } else if (videoStream) {
+      pushInput(videoStream.headers, videoStream.url);
+      ffmpegArgs.push('-map', '0:v:0', '-c:v', 'copy');
+    } else if (audioStream) {
+      pushInput(audioStream.headers, audioStream.url);
+      ffmpegArgs.push('-map', '0:a:0');
+      this.appendSectionDirectAudioOnlyCodec(ffmpegArgs, request, audioStream);
+    } else {
+      logStream?.end();
+      return null;
+    }
+
+    if (!wantAudioOnly) {
+      ffmpegArgs.push('-avoid_negative_ts', 'make_zero');
+    }
+    const containerMp4 =
+      (!wantAudioOnly && (request.outputFormat === 'mp4' || request.outputFormat === 'original')) ||
+      (wantAudioOnly && request.outputFormat === 'mp4');
+    if (containerMp4) {
+      ffmpegArgs.push('-movflags', '+faststart');
+    }
+
+    ffmpegArgs.push(outPath);
+
+    logLine(`# phase=${new Date().toISOString()} ffmpeg_start`);
+    logLine(`# ffmpeg_args=${JSON.stringify(ffmpegArgs)}`);
+
+    onProgress({
+      id: request.id,
+      phase: 'downloading',
+      percent: 1,
+      speed: '',
+      eta: '',
+      message: 'Clip: streaming segment (ffmpeg)…',
+    });
+
+    return await new Promise<ItemDownloadResult | null>((resolve) => {
+      const child = spawn(ffmpegPath, ffmpegArgs, {
+        windowsHide: true,
+        stdio: ['ignore', 'ignore', 'pipe'],
+        env: { ...process.env },
+      });
+
+      this.activeProcesses.set(request.id, child);
+
+      let stderrAcc = '';
+      let buf = '';
+      let lastEmit = 0;
+      let finished = false;
+      /** Long clips / slow CDN; fallback path still exists if this fires. */
+      const directTimeoutMs = 45 * 60 * 1000;
+      const timeoutKill = setTimeout(() => {
+        if (finished) {
+          return;
+        }
+        logLine(`# direct ffmpeg timeout after ${directTimeoutMs}ms`);
+        const pid = child.pid;
+        if (pid != null) {
+          treeKill(pid, 'SIGKILL', () => {});
+        } else {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* ignore */
+          }
+        }
+      }, directTimeoutMs);
+
+      const done = (out: ItemDownloadResult | null): void => {
+        if (finished) {
+          return;
+        }
+        finished = true;
+        clearTimeout(timeoutKill);
+        this.activeProcesses.delete(request.id);
+        logLine(`# phase=${new Date().toISOString()} done success=${out?.success ?? 'null'}`);
+        logStream?.end();
+        resolve(out);
+      };
+
+      const feedErr = (chunk: Buffer): void => {
+        const text = chunk.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        stderrAcc += text;
+        buf += text;
+        logStream?.write(text);
+        let idx: number;
+        while ((idx = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, idx);
+          buf = buf.slice(idx + 1);
+          const clean = stripAnsi(line);
+          const tm = clean.match(FFMPEG_TIME_RE);
+          if (tm) {
+            const now = Date.now();
+            if (now - lastEmit >= FFMPEG_PROGRESS_THROTTLE_MS) {
+              lastEmit = now;
+              const tsec = parseFfmpegTimeToSeconds(tm[1]!);
+              const pct = Math.min(99, Math.round((tsec / clipDuration) * 100));
+              onProgress({
+                id: request.id,
+                phase: 'downloading',
+                percent: Math.max(1, pct),
+                speed: '',
+                eta: '',
+                message: `Clip: ${pct}%`,
+              });
+            }
+          }
+        }
+      };
+
+      child.stderr?.on('data', feedErr);
+
+      child.on('error', () => {
+        try {
+          if (existsSync(outPath)) {
+            unlinkSync(outPath);
+          }
+        } catch {
+          /* ignore */
+        }
+        done(null);
+      });
+
+      child.on('close', (code) => {
+        if (buf.length > 0) {
+          const lines = buf.split('\n');
+          for (const line of lines) {
+            const clean = stripAnsi(line);
+            const tm = clean.match(FFMPEG_TIME_RE);
+            if (tm) {
+              const tsec = parseFfmpegTimeToSeconds(tm[1]!);
+              const pct = Math.min(99, Math.round((tsec / clipDuration) * 100));
+              onProgress({
+                id: request.id,
+                phase: 'downloading',
+                percent: Math.max(1, pct),
+                speed: '',
+                eta: '',
+                message: `Clip: ${pct}%`,
+              });
+            }
+          }
+          buf = '';
+        }
+        const userCancelled = this.userCancelledDownloadIds.delete(request.id);
+        if (userCancelled) {
+          try {
+            if (existsSync(outPath)) {
+              unlinkSync(outPath);
+            }
+          } catch {
+            /* ignore */
+          }
+          const msg = 'Download cancelled.';
+          onProgress({ id: request.id, phase: 'error', percent: 0, speed: '', eta: '', message: msg });
+          done({ id: request.id, success: false, outputPath: null, error: msg });
+          return;
+        }
+        if (code === 0 && existsSync(outPath)) {
+          const renamed = this.renameToFriendlyTitle(outPath, request);
+          onProgress({
+            id: request.id,
+            phase: 'complete',
+            percent: 100,
+            speed: '',
+            eta: '',
+            message: 'Download complete!',
+          });
+          done({ id: request.id, success: true, outputPath: renamed });
+          return;
+        }
+        try {
+          if (existsSync(outPath)) {
+            unlinkSync(outPath);
+          }
+        } catch {
+          /* ignore */
+        }
+        logLine(`# ffmpeg exit=${code} stderr_tail=${JSON.stringify(stderrAcc.slice(-800))}`);
+        done(null);
+      });
+    });
+  }
+
   /**
    * MP4 + AAC: YouTube DASH audio is often Opus → we must AAC-encode in VideoRemuxer (slow).
    * Prefer **m4a** DASH audio when available so merge/remux is mostly stream-copy.
@@ -1138,6 +1709,8 @@ export class YtDlpDownloadService {
       /** Cleaner cuts at section boundaries; yt-dlp passes keyframe forcing into ffmpeg. */
       args.push('--force-keyframes-at-cuts');
       args.push('--http-chunk-size', SECTION_HTTP_CHUNK_SIZE);
+      args.push('--fragment-retries', '5');
+      args.push('--retries', '3');
       /** Long VODs / slow CDNs: avoid dropping connections while fragments still arrive. */
       args.push('--socket-timeout', '120');
       /**
