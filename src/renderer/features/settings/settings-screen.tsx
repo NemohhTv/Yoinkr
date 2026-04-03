@@ -240,7 +240,7 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
           <p className="muted" style={{ fontSize: '0.85rem', margin: 0 }}>
             Age-restricted and members-only videos need a logged-in session. Yoinkr passes cookies directly to yt-dlp.
             <strong> Browser mode</strong> reads the cookie database from disk — fully quit the browser first.
-            On Windows only Firefox works reliably; Chrome/Edge encrypt cookies with DPAPI which yt-dlp cannot decrypt.
+            On <strong>Windows</strong>, Browser mode is only offered for <strong>Firefox</strong>. Chrome and Edge are blocked (encrypted cookies / wrong profile paths like <code>default-release</code> under Edge). Use <strong>Cookies.txt file</strong> for Chrome or Edge.
             <strong> Cookies file</strong> is the most reliable method — use a browser extension like &quot;Get cookies.txt LOCALLY&quot; to export, then point Yoinkr to that file.
           </p>
           <label className="field">

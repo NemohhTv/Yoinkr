@@ -14,6 +14,12 @@ export interface PreparedYtDlpCookieSource {
   sourcePath: string | null;
   summary: string;
   warnings: string[];
+  /**
+   * When true, do not invoke yt-dlp with these settings — e.g. Chrome/Edge browser cookies on Windows
+   * (DPAPI) which yt-dlp cannot use; user should switch to cookies.txt or Firefox.
+   */
+  authBlocked: boolean;
+  authBlockedReason?: string;
 }
 
 /**
@@ -51,10 +57,33 @@ export function buildYtDlpCookieArgs(settings: AppSettings, pathsService: AppPat
   return prepareYtDlpCookieSource(settings, pathsService).args;
 }
 
+function isWindowsChromeOrEdgeBrowserCookieMode(settings: AppSettings): boolean {
+  return (
+    process.platform === 'win32' &&
+    settings.ytDlpCookieMode === 'browser' &&
+    (settings.preferredBrowser === 'chrome' || settings.preferredBrowser === 'edge')
+  );
+}
+
+const WINDOWS_CHROME_EDGE_COOKIE_MESSAGE =
+  'On Windows, Browser cookie mode does not work with Chrome or Edge (encrypted cookie storage). In Settings, set Cookie source to “Cookies.txt file” and export from your browser (see README), or set the browser dropdown to Firefox and use a Firefox profile. Leave the profile field empty unless you use a non-default Firefox profile.';
+
 export function prepareYtDlpCookieSource(
   settings: AppSettings,
   pathsService: AppPathsService,
 ): PreparedYtDlpCookieSource {
+  if (isWindowsChromeOrEdgeBrowserCookieMode(settings)) {
+    return {
+      args: [],
+      mode: 'browser',
+      sourcePath: null,
+      summary: 'Blocked: Chrome/Edge browser cookies on Windows.',
+      warnings: [],
+      authBlocked: true,
+      authBlockedReason: WINDOWS_CHROME_EDGE_COOKIE_MESSAGE,
+    };
+  }
+
   if (settings.ytDlpCookieMode === 'paste') {
     const rawText = (settings.ytDlpCookiesPastedText ?? '').trim();
     if (!rawText) {
@@ -64,6 +93,7 @@ export function prepareYtDlpCookieSource(
         sourcePath: null,
         summary: 'Paste mode is selected, but no cookie text is present.',
         warnings: ['Paste the full Netscape cookies.txt export before testing or downloading.'],
+        authBlocked: false,
       };
     }
     const filePath = writePastedCookiesFile(pathsService, rawText);
@@ -73,6 +103,7 @@ export function prepareYtDlpCookieSource(
       sourcePath: filePath,
       summary: 'Pasted cookies written to temp file for yt-dlp.',
       warnings: [],
+      authBlocked: false,
     };
   }
 
@@ -85,6 +116,7 @@ export function prepareYtDlpCookieSource(
         sourcePath: null,
         summary: 'Cookie file mode is selected, but no file path is set.',
         warnings: ['Choose a valid Netscape cookies.txt export before testing or downloading.'],
+        authBlocked: false,
       };
     }
     if (!existsSync(filePath)) {
@@ -94,6 +126,7 @@ export function prepareYtDlpCookieSource(
         sourcePath: null,
         summary: `Cookie file was not found: ${filePath}`,
         warnings: ['Choose a valid Netscape cookies.txt export before testing or downloading.'],
+        authBlocked: false,
       };
     }
     return {
@@ -102,6 +135,7 @@ export function prepareYtDlpCookieSource(
       sourcePath: filePath,
       summary: `Cookies file: ${filePath}`,
       warnings: [],
+      authBlocked: false,
     };
   }
 
@@ -113,6 +147,7 @@ export function prepareYtDlpCookieSource(
       sourcePath: null,
       summary: `Browser cookies via ${spec}.`,
       warnings: [],
+      authBlocked: false,
     };
   }
 
@@ -122,6 +157,7 @@ export function prepareYtDlpCookieSource(
     sourcePath: null,
     summary: 'Cookie auth is disabled.',
     warnings: [],
+    authBlocked: false,
   };
 }
 

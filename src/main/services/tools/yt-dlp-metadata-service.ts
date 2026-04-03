@@ -9,7 +9,7 @@ import type {
 import type { AppSettings } from '@shared/types/settings';
 
 import { BinaryResolver } from './binary-resolver';
-import { buildYtDlpCookieArgs, getYtDlpCookieCacheFingerprint } from './yt-dlp-cookie-args';
+import { getYtDlpCookieCacheFingerprint, prepareYtDlpCookieSource } from './yt-dlp-cookie-args';
 import type { MetadataCache } from './metadata-cache';
 
 interface YtDlpChapter {
@@ -101,7 +101,15 @@ export class YtDlpMetadataService {
       );
     }
 
-    const cookieArgs = buildYtDlpCookieArgs(settings, this.pathsService);
+    const cookiePrepared = prepareYtDlpCookieSource(settings, this.pathsService);
+    if (cookiePrepared.authBlocked) {
+      throw new ServiceError(
+        'COOKIE_CONFIG',
+        cookiePrepared.authBlockedReason ?? 'Fix cookie settings before inspecting media.',
+      );
+    }
+
+    const cookieArgs = cookiePrepared.args;
     const result = await this.processRunner.run({
       command: ytDlpBinary.resolvedPath,
       args: [
@@ -150,7 +158,12 @@ export class YtDlpMetadataService {
       };
     }
 
-    const cookieArgs = buildYtDlpCookieArgs(settings, this.pathsService);
+    const prepared = prepareYtDlpCookieSource(settings, this.pathsService);
+    if (prepared.authBlocked) {
+      return { ok: false, message: prepared.authBlockedReason ?? 'Cookie configuration is not supported.' };
+    }
+
+    const cookieArgs = prepared.args;
     if (cookieArgs.length === 0) {
       if (settings.ytDlpCookieMode === 'file') {
         const p = settings.ytDlpCookiesFilePath.trim();

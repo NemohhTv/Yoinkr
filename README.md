@@ -61,7 +61,9 @@ Set **Cookie source** to **Paste cookies.txt text**, paste the **entire** export
 
 ### Browser mode (optional)
 
-**Browser** reads cookies from a browser profile on disk. **Fully quit that browser first** before downloading. On **Windows**, Chrome/Edge store cookies in a way yt-dlp often cannot use; prefer **Cookies.txt file** for Chrome/Edge, or use **Firefox** with browser mode if you rely on that path.
+**Browser** reads cookies from a browser profile on disk. **Fully quit that browser first** before downloading.
+
+On **Windows**, Yoinkr **does not** use Browser mode with **Chrome or Edge** (encrypted storage and confusing errors like missing `…\Edge\User Data\default-release`). Use **Cookies.txt file** for those browsers. Browser mode on Windows is intended for **Firefox** only (leave the profile field empty unless you use a non-default profile).
 
 ---
 

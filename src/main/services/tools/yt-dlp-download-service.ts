@@ -7,7 +7,7 @@ import type { AppPathsService } from '@main/services/paths/app-paths-service';
 import { ServiceError } from '@main/services/shared/service-error';
 import type { BinaryResolver } from './binary-resolver';
 import { findLatestOutputByDownloadId } from './download-output-resolver';
-import { buildYtDlpCookieArgs } from './yt-dlp-cookie-args';
+import { buildYtDlpCookieArgs, prepareYtDlpCookieSource } from './yt-dlp-cookie-args';
 import type { ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
 import type { AppSettings } from '@shared/types/settings';
 
@@ -171,6 +171,15 @@ export class YtDlpDownloadService {
         'Section downloads require a newer yt-dlp. In Settings, click "Update yt-dlp" and retry.',
       );
     }
+
+    const cookiePrepared = prepareYtDlpCookieSource(settings, this.pathsService);
+    if (cookiePrepared.authBlocked) {
+      throw new ServiceError(
+        'COOKIE_CONFIG',
+        cookiePrepared.authBlockedReason ?? 'Fix cookie settings in Settings before downloading.',
+      );
+    }
+
     const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
     const tempDir = join(downloadDir, `.tmp-${request.id}`);
     mkdirSync(tempDir, { recursive: true });
@@ -504,7 +513,7 @@ export class YtDlpDownloadService {
           const written = sumStreamingBytesForDownload(tempDir, downloadDir, request.id);
           if (written > lastPartBytes && written > 0) {
             lastPartBytes = written;
-            const pct = Math.min(97, 20 + Math.log10(written + 1) * 14);
+            const pct = Math.min(99, 22 + Math.log10(written + 1) * 14);
             emit({
               id: request.id,
               phase: 'downloading',
@@ -516,7 +525,7 @@ export class YtDlpDownloadService {
             return;
           }
 
-          const pct = Math.min(96, Math.max(lastShownPercent + 3, 10));
+          const pct = Math.min(99, Math.max(lastShownPercent + 2, 10));
           emit({
             id: request.id,
             phase: 'downloading',
