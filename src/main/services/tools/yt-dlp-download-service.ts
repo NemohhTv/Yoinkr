@@ -900,6 +900,11 @@ export class YtDlpDownloadService {
 
     if (this.requiresPartialSectionDownload(request)) {
       args.push('--concurrent-fragments', String(SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS));
+      /**
+       * Windows: on some machines ffmpeg waits for stdin when yt-dlp spawns it, so merge/remux
+       * looks hung forever (`Merging…` with no stderr). `-nostdin` is safe everywhere we target.
+       */
+      args.push('--ppa', 'ffmpeg:-nostdin');
     }
 
     args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
@@ -920,11 +925,11 @@ export class YtDlpDownloadService {
          * Do **not** force AAC in `Merger+ffmpeg`: intermediate is often **WebM**. Only **VideoRemuxer**.
          */
         if (mp4AacRemuxMode === 'copy') {
-          args.push('--ppa', 'VideoRemuxer+ffmpeg:-c:v copy -c:a copy');
+          args.push('--ppa', 'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a copy');
         } else {
           args.push(
             '--ppa',
-            'VideoRemuxer+ffmpeg:-c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
+            'VideoRemuxer+ffmpeg:-nostdin -c:v copy -c:a aac -b:a 192k -aac_coder fast -threads 0',
           );
         }
       }
