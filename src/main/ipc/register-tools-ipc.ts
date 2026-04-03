@@ -29,10 +29,12 @@ export const registerToolsIpc = (context: AppContext): void => {
 
       if (result.success) {
         const settings = context.settingsService.getSettings();
-        const mode = tool === 'yt-dlp' ? settings.ytDlpMode : settings.ffmpegMode;
-        if (mode !== 'bundled') {
-          const patch = tool === 'yt-dlp' ? { ytDlpMode: 'bundled' as const } : { ffmpegMode: 'bundled' as const };
-          context.settingsService.updateSettings(patch);
+        if (tool === 'yt-dlp' && settings.ytDlpMode !== 'bundled') {
+          context.settingsService.updateSettings({ ytDlpMode: 'bundled' });
+        } else if (tool === 'deno' && settings.denoMode !== 'bundled') {
+          context.settingsService.updateSettings({ denoMode: 'bundled' });
+        } else if (tool === 'ffmpeg-bundle' && settings.ffmpegMode !== 'bundled') {
+          context.settingsService.updateSettings({ ffmpegMode: 'bundled' });
         }
       }
 

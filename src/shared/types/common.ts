@@ -22,7 +22,7 @@ export interface BinaryStatus {
   status: 'ready' | 'missing' | 'unconfigured';
 }
 
-export type DownloadableToolName = 'yt-dlp' | 'ffmpeg-bundle';
+export type DownloadableToolName = 'yt-dlp' | 'deno' | 'ffmpeg-bundle';
 
 export interface ToolDownloadProgress {
   tool: DownloadableToolName;

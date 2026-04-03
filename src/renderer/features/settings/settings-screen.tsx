@@ -422,11 +422,10 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
         <div className="stack gap-sm">
           <ToolCard
             title="Deno"
-            description="JavaScript runtime for YouTube extraction in yt-dlp. Install Deno 2+ (e.g. from deno.com) or place deno.exe in the app binaries folder when using Bundled mode."
+            description="JavaScript runtime for YouTube extraction in yt-dlp. Use Download to fetch the latest Deno from GitHub, install manually from deno.com, or set a custom path."
             status={binaryStatus.find((s) => s.toolName === 'deno') ?? null}
-            downloadState={{ isDownloading: false, progress: null }}
-            onDownload={() => {}}
-            showManagedDownload={false}
+            downloadState={controller.downloadStates.deno}
+            onDownload={() => void controller.downloadTool('deno')}
             modeValue={draft.denoMode}
             onModeChange={(value) => controller.updateField('denoMode', value as AppSettings['denoMode'])}
             customPaths={[

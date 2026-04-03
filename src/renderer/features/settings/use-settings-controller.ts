@@ -22,6 +22,7 @@ export const useSettingsController = () => {
 
   const [downloadStates, setDownloadStates] = useState<Record<DownloadableToolName, ToolDownloadState>>({
     'yt-dlp': { isDownloading: false, progress: null },
+    deno: { isDownloading: false, progress: null },
     'ffmpeg-bundle': { isDownloading: false, progress: null },
   });
 

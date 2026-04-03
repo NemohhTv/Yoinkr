@@ -16,6 +16,7 @@ const GITHUB_API_HEADERS = {
 };
 
 const YTDLP_RELEASE_API = 'https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest';
+const DENO_RELEASE_API = 'https://api.github.com/repos/denoland/deno/releases/latest';
 const FFMPEG_RELEASE_API = 'https://api.github.com/repos/yt-dlp/FFmpeg-Builds/releases/latest';
 const FFMPEG_ASSET_PATTERN = /^ffmpeg-.*-win64-gpl\.zip$/;
 
@@ -32,7 +33,13 @@ export class ToolDownloadService {
 
   async downloadTool(tool: DownloadableToolName, onProgress: ProgressCallback): Promise<ToolDownloadResult> {
     try {
-      return tool === 'yt-dlp' ? await this.downloadYtDlp(onProgress) : await this.downloadFfmpegBundle(onProgress);
+      if (tool === 'yt-dlp') {
+        return await this.downloadYtDlp(onProgress);
+      }
+      if (tool === 'deno') {
+        return await this.downloadDeno(onProgress);
+      }
+      return await this.downloadFfmpegBundle(onProgress);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown download error';
       onProgress({ tool, phase: 'error', percent: 0, message });
@@ -70,6 +77,81 @@ export class ToolDownloadService {
 
     onProgress({ tool, phase: 'complete', percent: 100, message: `yt-dlp ${version ?? release.tag_name} installed.` });
     return { tool, success: true, installedPaths: [destPath], version: version ?? release.tag_name };
+  }
+
+  private denoWindowsZipAssetName(): string {
+    if (process.arch === 'arm64') {
+      return 'deno-aarch64-pc-windows-msvc.zip';
+    }
+    return 'deno-x86_64-pc-windows-msvc.zip';
+  }
+
+  private async downloadDeno(onProgress: ProgressCallback): Promise<ToolDownloadResult> {
+    const tool: DownloadableToolName = 'deno';
+    if (process.platform !== 'win32') {
+      throw new Error('Managed Deno install is only supported on Windows.');
+    }
+
+    const binariesPath = this.pathsService.getPaths().binariesPath;
+    this.ensureDir(binariesPath);
+
+    const zipAssetName = this.denoWindowsZipAssetName();
+    onProgress({ tool, phase: 'resolving', percent: 0, message: 'Fetching latest Deno release info...' });
+    const release = await this.fetchJson<GithubRelease>(DENO_RELEASE_API);
+    const asset = release.assets.find((a) => a.name === zipAssetName);
+    if (!asset) {
+      throw new Error(`Could not find ${zipAssetName} in the latest Deno GitHub release.`);
+    }
+
+    const zipPath = join(binariesPath, asset.name);
+    const tempZipPath = zipPath + '.download';
+
+    onProgress({ tool, phase: 'downloading', percent: 0, message: `Downloading Deno (${this.formatBytes(asset.size)})...` });
+    await this.downloadFile(asset.browser_download_url, tempZipPath, asset.size, (percent) => {
+      onProgress({ tool, phase: 'downloading', percent, message: `Downloading Deno... ${percent}%` });
+    });
+
+    onProgress({ tool, phase: 'extracting', percent: 0, message: 'Extracting deno.exe...' });
+    const destPath = this.extractDenoExeFromZip(tempZipPath, binariesPath);
+    this.cleanupFile(tempZipPath);
+
+    if (!destPath) {
+      throw new Error('Could not find deno.exe inside the downloaded archive.');
+    }
+
+    onProgress({ tool, phase: 'verifying', percent: 100, message: 'Verifying Deno...' });
+    const version = await this.probeVersion(destPath);
+
+    onProgress({ tool, phase: 'complete', percent: 100, message: `Deno ${version ?? release.tag_name} installed.` });
+    return { tool, success: true, installedPaths: [destPath], version: version ?? release.tag_name };
+  }
+
+  private extractDenoExeFromZip(zipPath: string, destDir: string): string | null {
+    const zip = new AdmZip(zipPath);
+    const entry = zip
+      .getEntries()
+      .find((e) => !e.isDirectory && basename(e.entryName).toLowerCase() === 'deno.exe');
+    if (!entry) {
+      return null;
+    }
+
+    const targetPath = join(destDir, 'deno.exe');
+    const data = entry.getData();
+    const tempPath = targetPath + '.tmp';
+    writeFileSync(tempPath, data);
+
+    if (existsSync(targetPath)) {
+      unlinkSync(targetPath);
+    }
+    renameSync(tempPath, targetPath);
+
+    try {
+      chmodSync(targetPath, 0o755);
+    } catch {
+      /* Windows */
+    }
+
+    return targetPath;
   }
 
   private async downloadFfmpegBundle(onProgress: ProgressCallback): Promise<ToolDownloadResult> {
