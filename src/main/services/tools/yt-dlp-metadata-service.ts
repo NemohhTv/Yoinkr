@@ -122,8 +122,9 @@ export class YtDlpMetadataService {
         '--skip-download',
         normalizedUrl,
       ],
-      timeoutMs: 30000,
-      maxBufferBytes: 8 * 1024 * 1024,
+      /** Long 4K VODs return huge format JSON; small buffer/timeouts look like a stuck “Add URL” step. */
+      timeoutMs: 120_000,
+      maxBufferBytes: 48 * 1024 * 1024,
     });
 
     if (result.exitCode !== 0) {

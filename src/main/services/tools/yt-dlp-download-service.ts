@@ -113,11 +113,12 @@ const MIN_YT_DLP_SECTION_VERSION = { year: 2024, month: 7, day: 1 } as const;
 /** Treat start/end within this many seconds of 0 / duration as “full video” (no `--download-sections`). */
 const DOWNLOAD_SECTION_FULL_SPAN_EPS_SEC = 0.75;
 /**
- * Parallel DASH/HLS fragments for section clips (major speed vs `--concurrent-fragments 1`).
- * `Merger+ffmpeg:-nostdin` + `ffmpeg:-nostdin` reduce Windows merge deadlocks; if a machine still
- * stalls at 0% CPU during merge, try lowering this (e.g. 4) in a future setting.
+ * Parallel DASH/HLS fragments for section clips. Higher = faster until YouTube or disk limits.
+ * `Merger+ffmpeg:-nostdin` + `ffmpeg:-nostdin` reduce Windows merge deadlocks; lower if merge stalls.
  */
-const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 16;
+const SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS = 24;
+/** Larger HTTP reads can reduce per-request overhead / mild throttling on fragment URLs. */
+const SECTION_HTTP_CHUNK_SIZE = '16M';
 
 /** Strip heartbeat-appended ` (NNs)` tails so messages do not chain `(3s) (6s) (9s)…`. */
 function stripElapsedSuffixFromProgressMessage(msg: string): string {
@@ -900,6 +901,9 @@ export class YtDlpDownloadService {
 
     if (this.requiresPartialSectionDownload(request)) {
       args.push('--concurrent-fragments', String(SECTION_DOWNLOAD_CONCURRENT_FRAGMENTS));
+      args.push('--http-chunk-size', SECTION_HTTP_CHUNK_SIZE);
+      /** Long VODs / slow CDNs: avoid dropping connections while fragments still arrive. */
+      args.push('--socket-timeout', '120');
       /**
        * Windows: ffmpeg can wait on stdin when spawned under yt-dlp; Merger may need its own ppa.
        */
