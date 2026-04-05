@@ -20,7 +20,7 @@ interface SettingsController {
   downloadStates: Record<DownloadableToolName, ToolDownloadState>;
   updateField: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   pickDirectory: (
-    field: 'downloadDirectory' | 'exportDirectory' | 'tempDirectory',
+    field: 'downloadDirectory' | 'audioDownloadDirectory' | 'exportDirectory' | 'tempDirectory',
     title: string,
   ) => Promise<void>;
   pickCookiesFile: () => Promise<void>;
@@ -191,7 +191,7 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
           <p className="eyebrow">Settings</p>
           <h1>Desktop defaults</h1>
           <p className="muted">
-            Configure download and export folders, bundled tools, cookies, and download behavior. Use <strong>Save settings</strong> at the bottom of this page to persist changes.
+            Configure video/audio download folders, export and temp paths, bundled tools, cookies, and download behavior. Use <strong>Save settings</strong> at the bottom of this page to persist changes.
           </p>
         </div>
 
@@ -199,15 +199,23 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
 
         <div className="stack gap-md">
           <h2>Folders</h2>
-          <DirectoryRow label="Download directory" value={draft.downloadDirectory} onPick={() => void controller.pickDirectory('downloadDirectory', 'Choose default download directory')} />
+          <DirectoryRow label="Download directory (video)" value={draft.downloadDirectory} onPick={() => void controller.pickDirectory('downloadDirectory', 'Choose folder for video downloads')} />
+          <DirectoryRow label="Audio download directory" value={draft.audioDownloadDirectory} onPick={() => void controller.pickDirectory('audioDownloadDirectory', 'Choose folder for audio-only downloads')} />
+          <p className="muted" style={{ fontSize: '0.82rem', margin: '-8px 0 0' }}>
+            Audio folder is used for audio-only queue items and when saving as mp3, m4a, wav, or flac. Leave blank to use the video download folder. Use <strong>Save settings</strong> so the downloader sees your paths.
+          </p>
           <DirectoryRow label="Export directory" value={draft.exportDirectory} onPick={() => void controller.pickDirectory('exportDirectory', 'Choose default export directory')} />
           <DirectoryRow label="Temp directory" value={draft.tempDirectory} onPick={() => void controller.pickDirectory('tempDirectory', 'Choose temporary job directory')} />
         </div>
 
+        <h3 className="settings-subsection-title">Queue &amp; pacing</h3>
         <div className="grid-two">
           <label className="field">
             <span>Max concurrent downloads</span>
             <input type="number" value={draft.maxConcurrentDownloads} min={1} max={8} onChange={(event) => controller.updateField('maxConcurrentDownloads', Number(event.target.value))} />
+            <span className="muted" style={{ fontSize: '0.82rem', display: 'block', marginTop: 4 }}>
+              For <strong>Download all</strong> only. Per-row downloads ignore this. Throttle mode (below) always does one at a time.
+            </span>
           </label>
           <label className="field">
             <span>Max concurrent processing jobs</span>
@@ -225,9 +233,23 @@ export const SettingsScreen = ({ controller }: { controller: SettingsController 
             onChange={(event) => controller.updateField('sectionConcurrentFragments', Number(event.target.value))}
           />
           <span className="muted" style={{ fontSize: '0.82rem', display: 'block', marginTop: 4 }}>
-            Used only for timed section downloads. Lower if merge stalls on a slow PC; higher for speed on fast disks.
+            Timed section downloads only. Lower if merge stalls; higher on fast disks.
           </span>
         </label>
+
+        <div className="settings-option-stack">
+          <label className="settings-checkbox-row">
+            <input
+              type="checkbox"
+              checked={draft.downloadThrottleMode}
+              onChange={(event) => controller.updateField('downloadThrottleMode', event.target.checked)}
+            />
+            <span className="settings-checkbox-title">Download throttle mode</span>
+          </label>
+          <p className="settings-option-help">
+            Gentler requests to the site: about 2–6 seconds between downloads, at most 3 parallel fragments, and <strong>Download all</strong> runs one queue item at a time. This may help with busy sites; it is not a guarantee against limits or account issues.
+          </p>
+        </div>
 
         <div className="grid-two">
           <label className="field">

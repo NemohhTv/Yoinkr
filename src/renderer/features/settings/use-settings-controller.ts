@@ -93,7 +93,7 @@ export const useSettingsController = () => {
   };
 
   const pickDirectory = async (
-    field: 'downloadDirectory' | 'exportDirectory' | 'tempDirectory',
+    field: 'downloadDirectory' | 'audioDownloadDirectory' | 'exportDirectory' | 'tempDirectory',
     title: string,
   ): Promise<void> => {
     const selectedPath = await yoinkrClient.settings.pickDirectory(title);

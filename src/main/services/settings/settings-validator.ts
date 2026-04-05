@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS, type AppSettings, type SettingsPatch } from '@shared/
 
 const settingsSchema = z.object({
   downloadDirectory: z.string(),
+  audioDownloadDirectory: z.string(),
   exportDirectory: z.string(),
   tempDirectory: z.string(),
   maxConcurrentDownloads: z.number().int().min(1).max(8),
@@ -29,6 +30,7 @@ const settingsSchema = z.object({
   legalNoticeAccepted: z.boolean(),
   saveDownloadLogs: z.boolean(),
   sectionConcurrentFragments: z.number().int().min(1).max(32),
+  downloadThrottleMode: z.boolean(),
 });
 
 export class SettingsValidator {

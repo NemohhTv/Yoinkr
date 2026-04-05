@@ -590,6 +590,50 @@ button {
   color: #cbd5e1;
 }
 
+/* Checkbox + full-width description (avoid flex column layout breaking long copy) */
+.settings-subsection-title {
+  margin: 18px 0 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  letter-spacing: 0.02em;
+}
+
+.settings-option-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 2px;
+  max-width: 40rem;
+}
+
+.settings-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+  color: #e2e8f0;
+  line-height: 1.4;
+}
+
+.settings-checkbox-row input[type='checkbox'] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.settings-checkbox-title {
+  font-weight: 600;
+}
+
+.settings-option-help {
+  margin: 0;
+  padding-left: 26px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
 .validation-strip {
   display: flex;
   flex-wrap: wrap;

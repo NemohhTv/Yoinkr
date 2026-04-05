@@ -6,7 +6,13 @@ export type OverwriteBehavior = 'save-as-new' | 'replace-existing' | 'confirm-re
 export type YtDlpCookieMode = 'none' | 'browser' | 'file' | 'paste';
 
 export interface AppSettings {
+  /** Default folder for video and mixed video+audio downloads. */
   downloadDirectory: string;
+  /**
+   * Folder for audio-only downloads (and video+audio jobs that extract to mp3/m4a/etc.).
+   * Empty = use `downloadDirectory`.
+   */
+  audioDownloadDirectory: string;
   exportDirectory: string;
   tempDirectory: string;
   maxConcurrentDownloads: number;
@@ -46,10 +52,16 @@ export interface AppSettings {
    * Lower (e.g. 4–8) on slow disks or flaky networks; higher on fast machines (max 32).
    */
   sectionConcurrentFragments: number;
+  /**
+   * When true, uses Yoinkr’s built-in “gentle” yt-dlp preset (sleep between downloads, fewer parallel fragments)
+   * and runs **Download all** one queue item at a time. Not a guarantee against site limits.
+   */
+  downloadThrottleMode: boolean;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   downloadDirectory: '',
+  audioDownloadDirectory: '',
   exportDirectory: '',
   tempDirectory: '',
   maxConcurrentDownloads: 2,
@@ -75,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   legalNoticeAccepted: false,
   saveDownloadLogs: true,
   sectionConcurrentFragments: 8,
+  downloadThrottleMode: false,
 };
 
 export type SettingsPatch = Partial<AppSettings>;

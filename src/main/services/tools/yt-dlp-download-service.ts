@@ -20,6 +20,12 @@ import type { BinaryResolver } from './binary-resolver';
 import { findLatestOutputByDownloadId } from './download-output-resolver';
 import { buildYtDlpCookieArgs, prepareYtDlpCookieSource } from './yt-dlp-cookie-args';
 import { getDenoPathEnvForYtDlpSpawn, getYtDlpJsRuntimeCliArgs } from './yt-dlp-js-runtime';
+import {
+  appendYtDlpConcurrentFragmentsArg,
+  appendYtDlpSleepArgs,
+  effectiveSectionConcurrentFragments,
+} from './yt-dlp-throttle-args';
+import { isAudioDestinationDownload } from '@shared/lib/download-destination';
 import type { ItemDownloadRequest, ItemDownloadProgress, ItemDownloadResult } from '@shared/types/downloader';
 import type { AppSettings } from '@shared/types/settings';
 
@@ -160,6 +166,26 @@ export class YtDlpDownloadService {
     } as NodeJS.ProcessEnv;
   }
 
+  /** Aligns folder choice, `-f`, and `-x` with queue card output (handles desynced `audioOnly`). */
+  private requestIsAudioDownload(request: ItemDownloadRequest): boolean {
+    return isAudioDestinationDownload({
+      mediaType: request.mediaType,
+      audioOnly: request.audioOnly,
+      outputFormat: request.outputFormat,
+    });
+  }
+
+  /** Video / muxed output uses `downloadDirectory`; audio jobs use `audioDownloadDirectory` when set. */
+  private resolveDownloadDirectory(settings: AppSettings, request: ItemDownloadRequest): string {
+    const fallback = this.pathsService.getPaths().managedDirectories.downloads;
+    const videoDir = (settings.downloadDirectory || fallback).trim() || fallback;
+    if (!this.requestIsAudioDownload(request)) {
+      return videoDir;
+    }
+    const audioExplicit = settings.audioDownloadDirectory?.trim();
+    return audioExplicit ? audioExplicit : videoDir;
+  }
+
   cancelItem(id: string): boolean {
     this.userCancelledDownloadIds.add(id);
     let killed = false;
@@ -220,11 +246,11 @@ export class YtDlpDownloadService {
       );
     }
 
-    const downloadDir = settings.downloadDirectory || this.pathsService.getPaths().managedDirectories.downloads;
+    const downloadDir = this.resolveDownloadDirectory(settings, request);
     const outputTemplate = join(downloadDir, `${request.id}__%(title).200B.%(ext)s`);
 
     if (this.requiresPartialSectionDownload(request)) {
-      if (request.mediaType === 'audio-only' || request.audioOnly) {
+      if (this.requestIsAudioDownload(request)) {
         return this.downloadSectionAudioOnly(request, settings, onProgress, downloadDir);
       }
       if (request.mediaType === 'video-only') {
@@ -1472,7 +1498,9 @@ export class YtDlpDownloadService {
       '--download-sections',
       sectionSpec,
       '--concurrent-fragments',
-      String(this.sectionClipConcurrentFragments(settings)),
+      String(
+        effectiveSectionConcurrentFragments(settings, this.sectionClipConcurrentFragments(settings)),
+      ),
       '--http-chunk-size',
       SECTION_HTTP_CHUNK_SIZE,
       '--socket-timeout',
@@ -1490,6 +1518,7 @@ export class YtDlpDownloadService {
     if (ffmpegPath && existsSync(ffmpegPath)) {
       commonArgs.push('--ffmpeg-location', ffmpegPath);
     }
+    appendYtDlpSleepArgs(commonArgs, settings);
     return commonArgs;
   }
 
@@ -1886,7 +1915,7 @@ export class YtDlpDownloadService {
   private prefersM4aDashAudio(request: ItemDownloadRequest): boolean {
     return (
       request.mediaType === 'video-audio' &&
-      !request.audioOnly &&
+      !this.requestIsAudioDownload(request) &&
       request.outputFormat === 'mp4' &&
       request.audioPreference === 'aac'
     );
@@ -1926,9 +1955,12 @@ export class YtDlpDownloadService {
       args.push('--ffmpeg-location', ffmpegPath);
     }
 
+    appendYtDlpSleepArgs(args, settings);
+    appendYtDlpConcurrentFragmentsArg(args, settings);
+
     args.push(...(selectionOverride ?? this.buildSelectionArgs(request)));
 
-    if (request.mediaType === 'audio-only' || request.audioOnly) {
+    if (this.requestIsAudioDownload(request)) {
       args.push('-x', '--audio-format', this.mapAudioFormat(request.outputFormat));
     } else if (request.outputFormat !== 'original') {
       args.push('--remux-video', request.outputFormat);
@@ -2019,7 +2051,7 @@ export class YtDlpDownloadService {
     const selectors: string[] = [];
     const sortFields: string[] = [];
 
-    if (request.mediaType === 'audio-only' || request.audioOnly) {
+    if (this.requestIsAudioDownload(request)) {
       selectors.push('bestaudio/best');
 
       if (request.audioPreference === 'aac') {
@@ -2080,7 +2112,7 @@ export class YtDlpDownloadService {
    */
   private buildFallbackSelectionArgs(request: ItemDownloadRequest): string[] {
     const heightFilter = this.getHeightFilter(request.qualityTarget);
-    if (request.mediaType === 'audio-only' || request.audioOnly) {
+    if (this.requestIsAudioDownload(request)) {
       return ['-f', 'bestaudio/best'];
     }
     if (request.mediaType === 'video-only') {
@@ -2104,7 +2136,7 @@ export class YtDlpDownloadService {
    * Last resort: combined `best` stream (often lower quality but almost always available).
    */
   private buildLastResortSelectionArgs(request: ItemDownloadRequest): string[] {
-    if (request.mediaType === 'audio-only' || request.audioOnly) {
+    if (this.requestIsAudioDownload(request)) {
       return ['-f', 'bestaudio/best'];
     }
     if (request.mediaType === 'video-only') {

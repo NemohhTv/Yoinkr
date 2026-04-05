@@ -14,7 +14,11 @@ export const registerEditorIpc = (context: AppContext): void => {
     try {
       let normalizedRequest = context.editorFileService.normalizeOpenRequest(request);
       const settings = context.settingsService.getSettings();
-      const downloadDir = settings.downloadDirectory || context.pathsService.getPaths().managedDirectories.downloads;
+      const paths = context.pathsService.getPaths();
+      const videoDownloadDir = (settings.downloadDirectory || paths.managedDirectories.downloads).trim() || paths.managedDirectories.downloads;
+      const audioDownloadDir = settings.audioDownloadDirectory?.trim()
+        ? settings.audioDownloadDirectory.trim()
+        : videoDownloadDir;
 
       if (normalizedRequest.sourceKind === 'download' && normalizedRequest.downloadId) {
         let pathToUse = normalizedRequest.sourcePath;
@@ -28,7 +32,10 @@ export const registerEditorIpc = (context: AppContext): void => {
             pathToUse = normalizedRequest.sourcePath;
           }
           if (!existsSync(pathToUse)) {
-            const scanned = findLatestOutputByDownloadId(downloadDir, normalizedRequest.downloadId);
+            let scanned = findLatestOutputByDownloadId(videoDownloadDir, normalizedRequest.downloadId);
+            if (!scanned && audioDownloadDir !== videoDownloadDir) {
+              scanned = findLatestOutputByDownloadId(audioDownloadDir, normalizedRequest.downloadId);
+            }
             if (scanned) {
               normalizedRequest = context.editorFileService.normalizeOpenRequest({
                 ...normalizedRequest,

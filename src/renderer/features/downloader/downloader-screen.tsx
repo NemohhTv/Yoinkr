@@ -22,6 +22,7 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
     sectionTimelineOpenId,
     toggleSectionTimeline,
     updateQueueItem,
+    downloadAllStaged,
   } = controller;
 
   const navigate = useNavigate();
@@ -285,7 +286,7 @@ export const DownloaderScreen = ({ controller }: { controller: DownloaderControl
           <div className="dl-bottom-actions">
             <button className="dl-btn dl-btn-secondary" onClick={() => controller.triggerPlaceholderAction('Queue cleared.')} title="Clear queue">Clear</button>
             {queueSummary.pending > 0 && (
-              <button className="dl-btn dl-btn-download" onClick={() => { queueItems.filter((i) => i.status === 'staged' || i.status === 'error').forEach((i) => void controller.downloadItem(i.id)); }}>
+              <button className="dl-btn dl-btn-download" onClick={() => void downloadAllStaged()}>
                 Download{queueSummary.pending > 1 ? ` All (${queueSummary.pending})` : ''}
               </button>
             )}

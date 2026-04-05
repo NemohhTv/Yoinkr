@@ -14,6 +14,7 @@ import type {
 import type { OutputFormat } from '@shared/types/settings';
 
 import { yoinkrClient } from '@renderer/lib/api/yoinkr-client';
+import { isAudioDestinationDownload } from '@shared/lib/download-destination';
 
 const mediaTypeToOutputFormat: Record<DownloadMediaType, OutputFormat[]> = {
   'video-audio': ['mp4', 'mkv', 'webm', 'original'],
@@ -201,10 +202,20 @@ const getActiveValidation = (
 
 const POST_DOWNLOAD_ACTIVITY_MS = 15_000;
 
-export const useDownloaderController = () => {
+export interface DownloaderControllerOptions {
+  maxConcurrentDownloads: number;
+  downloadThrottleMode: boolean;
+}
+
+export const useDownloaderController = ({
+  maxConcurrentDownloads,
+  downloadThrottleMode,
+}: DownloaderControllerOptions) => {
   const location = useLocation();
   const postDownloadActivityTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const queueItemsRef = useRef<QueueCard[]>([]);
+  const maxConcurrentRef = useRef(maxConcurrentDownloads);
+  const throttleModeRef = useRef(downloadThrottleMode);
 
   const [form, setForm] = useState<DownloaderFormState>(initialForm);
   const [validation, setValidation] = useState<DownloadUrlValidation[]>([]);
@@ -220,6 +231,14 @@ export const useDownloaderController = () => {
   useEffect(() => {
     queueItemsRef.current = queueItems;
   }, [queueItems]);
+
+  useEffect(() => {
+    maxConcurrentRef.current = maxConcurrentDownloads;
+  }, [maxConcurrentDownloads]);
+
+  useEffect(() => {
+    throttleModeRef.current = downloadThrottleMode;
+  }, [downloadThrottleMode]);
 
   const activeValidation = useMemo(
     () => getActiveValidation(validation, activeValidationUrl),
@@ -592,13 +611,18 @@ export const useDownloaderController = () => {
     );
 
     try {
+      const audioJob = isAudioDestinationDownload({
+        mediaType: item.mediaType,
+        audioOnly: item.audioOnly,
+        outputFormat: item.fileType,
+      });
       const result = await yoinkrClient.downloader.startItem({
         id: item.id,
         url: item.sourceUrl,
-        mediaType: item.mediaType,
+        mediaType: audioJob ? 'audio-only' : item.mediaType,
         qualityTarget: item.qualityTarget,
         outputFormat: item.fileType,
-        audioOnly: item.audioOnly,
+        audioOnly: audioJob,
         audioPreference: item.audioPreference,
         allowReencodeFallback: item.allowReencodeFallback,
         title: item.title,
@@ -669,6 +693,22 @@ export const useDownloaderController = () => {
       );
     }
   }, [clearPostDownloadActivityTimer]);
+
+  const downloadAllStaged = useCallback(async () => {
+    const ids = queueItemsRef.current
+      .filter((i) => i.status === 'staged' || i.status === 'error')
+      .map((i) => i.id);
+    if (ids.length === 0) {
+      return;
+    }
+    const limit = throttleModeRef.current
+      ? 1
+      : Math.max(1, Math.min(8, maxConcurrentRef.current));
+    for (let offset = 0; offset < ids.length; offset += limit) {
+      const chunk = ids.slice(offset, offset + limit);
+      await Promise.all(chunk.map((id) => downloadItem(id)));
+    }
+  }, [downloadItem]);
 
   const cancelItem = useCallback(async (id: string): Promise<void> => {
     try {
@@ -741,6 +781,7 @@ export const useDownloaderController = () => {
     updateQueueItem,
     removeQueueItem,
     downloadItem,
+    downloadAllStaged,
     cancelItem,
     revealFile,
     pasteFromClipboard,
